@@ -51,6 +51,10 @@
   <div id="app" class="container-fluid py-2 px-2 px-sm-3" style="max-width: 640px;">
     <h1 class="h5 mb-2 mt-1 fw-bold">Claw Mgr</h1>
     <div v-if="loading" class="mc-load-bar mb-2" style="border-radius: 1px;"></div>
+    <div v-if="versionUpdateAvailable" class="small py-1 px-2 mb-2 rounded d-flex align-items-center justify-content-between" style="background: rgba(88, 166, 255, 0.15); border: 1px solid rgba(88, 166, 255, 0.4);">
+      <span>New version <strong>{{ versionLatest }}</strong> available</span>
+      <a href="https://github.com/Ascendism/claw-mgr" target="_blank" rel="noopener" class="btn btn-sm btn-outline-primary">Update</a>
+    </div>
 
     <!-- Model + Gateway status + Start/Stop (always first) -->
     <div class="mc-card">
@@ -360,6 +364,8 @@
         remoteCustomEnvKey: '',
         remoteCredsCheck: { envKey: null, set: false },
         loading: true,
+        versionUpdateAvailable: false,
+        versionLatest: '',
       },
       computed: {
         currentRemoteProviderModels() {
@@ -422,7 +428,7 @@
         },
         async refresh() {
           try {
-            const [stateRes, activityRes, cronRes, heartbeatRes, dashboardRes, configRes, providersRes] = await Promise.all([
+            const [stateRes, activityRes, cronRes, heartbeatRes, dashboardRes, configRes, providersRes, versionRes] = await Promise.all([
               fetch('/api/state'),
               fetch('/api/activity'),
               fetch('/api/cron'),
@@ -430,6 +436,7 @@
               fetch('/api/dashboard/summary').catch(() => ({ ok: false })),
               fetch('/api/config').catch(() => ({ ok: false })),
               fetch('/api/remote-providers').catch(() => ({ ok: false })),
+              fetch('/api/version').catch(() => ({ ok: false })),
             ]);
 
             // State first (so "running" can win over config for hydration)
@@ -445,6 +452,11 @@
             if (providersRes.ok) {
               const data = await providersRes.json();
               this.remoteProviders = data.providers || [];
+            }
+            if (versionRes.ok) {
+              const v = await versionRes.json();
+              this.versionUpdateAvailable = !!v.updateAvailable;
+              this.versionLatest = v.latestVersion || '';
             }
 
             // Config (saved preferences)

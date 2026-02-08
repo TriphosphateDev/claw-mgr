@@ -11,6 +11,40 @@ const { appendActivity } = require('./services/activityLog');
 const app = express();
 const PORT = Number(process.env.PORT) || 8011;
 const isWindows = process.platform === 'win32';
+
+// Self version (from package.json)
+const pkg = require('./package.json');
+const CURRENT_VERSION = pkg.version || '0.0.0';
+const GITHUB_RAW_PKG = 'https://raw.githubusercontent.com/Ascendism/claw-mgr/main/package.json';
+const VERSION_CACHE_MS = 10 * 60 * 1000; // 10 min
+let versionCheckCache = { result: null, at: 0 };
+
+function parseVersion(s) {
+  if (!s || typeof s !== 'string') return [0, 0, 0];
+  const parts = s.replace(/^v/, '').split('.').map((n) => parseInt(n, 10) || 0);
+  return [parts[0] || 0, parts[1] || 0, parts[2] || 0];
+}
+
+function compareVersions(a, b) {
+  const va = parseVersion(a);
+  const vb = parseVersion(b);
+  for (let i = 0; i < 3; i++) {
+    if (va[i] > vb[i]) return 1;
+    if (va[i] < vb[i]) return -1;
+  }
+  return 0;
+}
+
+async function fetchLatestVersion() {
+  try {
+    const r = await fetch(GITHUB_RAW_PKG, { signal: AbortSignal.timeout(5000) });
+    if (!r.ok) return null;
+    const data = await r.json();
+    return data.version || null;
+  } catch {
+    return null;
+  }
+}
 const workspaceRoot = path.join(__dirname, '..');
 const CONFIG_PATH = path.join(workspaceRoot, 'startup-config.json');
 const OPENCLAW_CONFIG_PATH = path.join(os.homedir(), '.openclaw', 'openclaw.json');
@@ -679,6 +713,21 @@ app.post('/api/notifications/dismiss', (req, res) => {
   res.json(notifications.dismiss({ id, beforeTs }));
 });
 
+// GET /api/version — self vs GitHub main for update notice
+app.get('/api/version', async (req, res) => {
+  const now = Date.now();
+  if (versionCheckCache.result != null && now - versionCheckCache.at < VERSION_CACHE_MS) {
+    return res.json(versionCheckCache.result);
+  }
+  const latest = await fetchLatestVersion();
+  const updateAvailable = latest != null && compareVersions(latest, CURRENT_VERSION) > 0;
+  versionCheckCache = {
+    result: { currentVersion: CURRENT_VERSION, latestVersion: latest || CURRENT_VERSION, updateAvailable },
+    at: now,
+  };
+  res.json(versionCheckCache.result);
+});
+
 // GET /api/cron — include last run timestamp per job for UI
 app.get('/api/cron', (req, res) => {
   const jobs = readJobs();
@@ -775,7 +824,11 @@ app.get('*', async (req, res) => {
   res.type('html').send(html);
 });
 
-app.listen(PORT, () => {
+app.listen(PORT, async () => {
   console.log(`Claw Mgr at http://127.0.0.1:${PORT}`);
   console.log(`Serving HTML from: ${path.resolve(indexPath)}`);
+  const latest = await fetchLatestVersion();
+  if (latest != null && compareVersions(latest, CURRENT_VERSION) > 0) {
+    console.log(`[claw-mgr] Update available: ${CURRENT_VERSION} → ${latest} (https://github.com/Ascendism/claw-mgr)`);
+  }
 });
