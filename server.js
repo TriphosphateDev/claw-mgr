@@ -3,6 +3,8 @@ const path = require('path');
 const fs = require('fs');
 const os = require('os');
 const { spawn } = require('child_process');
+const { getDashboardSummary } = require('./services/openclawStatus');
+const { readJobs, readRuns, runNow } = require('./services/openclawCron');
 
 const app = express();
 const PORT = Number(process.env.PORT) || 8011;
@@ -13,7 +15,7 @@ const OPENCLAW_CONFIG_PATH = path.join(os.homedir(), '.openclaw', 'openclaw.json
 const STATE_PATH = path.join(__dirname, '.claw-mgr-state.json');
 const MEMORY_DIR = path.join(workspaceRoot, 'memory');
 const HEARTBEAT_STATE_PATH = path.join(MEMORY_DIR, 'heartbeat-state.json');
-const CRON_JOBS_PATH = path.join(os.homedir(), '.openclaw', 'cron', 'jobs.json');
+// cron jobs are handled via services/openclawCron.js
 const GATEWAY_URL = process.env.OPENCLAW_GATEWAY_URL || 'http://127.0.0.1:18789';
 
 app.use(express.json());
@@ -388,28 +390,33 @@ app.get('/api/activity', (req, res) => {
   res.json(activities);
 });
 
+// GET /api/dashboard/summary
+app.get('/api/dashboard/summary', async (req, res) => {
+  const result = await getDashboardSummary();
+  if (!result.ok) return res.status(500).json(result);
+  res.json(result);
+});
+
 // GET /api/cron
 app.get('/api/cron', (req, res) => {
-  try {
-    if (!fs.existsSync(CRON_JOBS_PATH)) {
-      return res.json({ jobs: [] });
-    }
-    const raw = fs.readFileSync(CRON_JOBS_PATH, 'utf8');
-    const data = JSON.parse(raw);
-    const jobs = Array.isArray(data) ? data : data?.jobs || [];
-    const list = (Array.isArray(jobs) ? jobs : []).map((j) => ({
-      jobId: j.jobId ?? j.id,
-      name: j.name ?? '(unnamed)',
-      enabled: j.enabled !== false,
-      schedule: j.schedule,
-      payload: j.payload,
-      sessionTarget: j.sessionTarget,
-      ...j,
-    }));
-    res.json({ jobs: list });
-  } catch (e) {
-    res.status(500).json({ error: e.message, jobs: [] });
-  }
+  const jobs = readJobs();
+  res.json({ jobs });
+});
+
+// POST /api/cron/:jobId/run
+app.post('/api/cron/:jobId/run', async (req, res) => {
+  const { jobId } = req.params;
+  const result = await runNow(jobId);
+  if (!result.ok) return res.status(500).json(result);
+  res.json(result);
+});
+
+// GET /api/cron/:jobId/runs
+app.get('/api/cron/:jobId/runs', (req, res) => {
+  const { jobId } = req.params;
+  const limit = Number(req.query.limit || 20);
+  const runs = readRuns(jobId, limit);
+  res.json({ ok: true, data: { runs } });
 });
 
 // GET /api/heartbeat
