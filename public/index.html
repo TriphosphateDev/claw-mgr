@@ -1,0 +1,310 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Claw Mgr</title>
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet">
+  <style>
+    :root { --mc-bg: #0d1117; --mc-card: #161b22; --mc-border: #30363d; --mc-text: #e6edf3; --mc-muted: #c9d1d9; }
+    body { background: var(--mc-bg); color: var(--mc-text); font-size: 0.875rem; min-height: 100vh; }
+    .mc-card { background: var(--mc-card); border: 1px solid var(--mc-border); border-radius: 6px; padding: 0.5rem 0.75rem; margin-bottom: 0.35rem; }
+    .mc-card h6 { margin: 0 0 0.25rem 0; font-size: 0.75rem; font-weight: 600; color: #c9d1d9; text-transform: uppercase; letter-spacing: 0.02em; }
+    .mc-list-item { padding: 0.25rem 0; border-bottom: 1px solid var(--mc-border); cursor: pointer; transition: background .15s; color: #e6edf3; }
+    .mc-list-item:last-child { border-bottom: 0; }
+    .mc-list-item:hover { background: rgba(255,255,255,.05); }
+    .mc-list-item .small { color: #c9d1d9 !important; }
+    .modal-content { background: var(--mc-card); border-color: var(--mc-border); color: var(--mc-text); }
+    .modal-header, .modal-footer { border-color: var(--mc-border); }
+    .modal-header .btn-close { filter: invert(1); }
+    .form-select, .form-control { background: var(--mc-card); border-color: var(--mc-border); color: var(--mc-text); font-size: 0.875rem; }
+    .form-select:focus, .form-control:focus { background: var(--mc-card); border-color: #58a6ff; color: var(--mc-text); box-shadow: 0 0 0 0.2rem rgba(88,166,255,.25); }
+    .btn { font-size: 0.8125rem; padding: 0.25rem 0.5rem; }
+    .btn-success { background: #238636; border-color: #238636; }
+    .btn-danger { background: #da3633; border-color: #da3633; }
+    .badge { font-size: 0.7rem; font-weight: 500; }
+    pre { font-size: 0.75rem; background: #0d1117; padding: 0.5rem; border-radius: 4px; margin: 0; overflow-x: auto; }
+    .status-dot { width: 6px; height: 6px; border-radius: 50%; display: inline-block; margin-right: 0.35rem; }
+    .status-dot.ok { background: #3fb950; }
+    .status-dot.err { background: #f85149; }
+    .btn-outline-secondary { border-color: var(--mc-border); color: var(--mc-muted); }
+    .btn-outline-secondary:hover { background: rgba(255,255,255,.08); border-color: var(--mc-border); color: var(--mc-text); }
+    .accordion-item { background: var(--mc-card); border-color: var(--mc-border); }
+    .accordion-button { background: #161b22; color: var(--mc-text); border-color: var(--mc-border); font-size: 0.875rem; padding: 0.4rem 0.75rem; }
+    .accordion-button:not(.collapsed) { background: #21262d; color: var(--mc-text); box-shadow: none; }
+    .accordion-button::after { filter: invert(1); }
+    .accordion-button:focus { box-shadow: none; border-color: var(--mc-border); }
+    .accordion-body { padding: 0.4rem 0.75rem; font-size: 0.8125rem; color: #c9d1d9; }
+    .obj-row { padding: 0.2rem 0; border-bottom: 1px solid var(--mc-border); }
+    .obj-row:last-child { border-bottom: 0; }
+    .obj-key { color: #79c0ff; margin-right: 0.35rem; }
+    #app .text-muted { color: #c9d1d9 !important; }
+    #app .mc-card small { color: #c9d1d9 !important; }
+  </style>
+</head>
+<body>
+  <script>window.__OLLAMA_MODELS__ = [];</script>
+  <div id="app" class="container-fluid py-2 px-2 px-sm-3" style="max-width: 640px;">
+    <h1 class="h5 mb-2 mt-1 fw-bold">Claw Mgr</h1>
+
+    <!-- Mode + Model + Start/Stop -->
+    <div class="mc-card">
+      <h6>Model</h6>
+      <div class="d-flex flex-wrap align-items-center gap-1 mb-1">
+        <div class="btn-group btn-group-sm" role="group">
+          <button type="button" class="btn" :class="mode === 'local' ? 'btn-primary' : 'btn-outline-secondary'" @click="mode = 'local'">Local</button>
+          <button type="button" class="btn" :class="mode === 'remote' ? 'btn-primary' : 'btn-outline-secondary'" @click="mode = 'remote'">Remote</button>
+        </div>
+        <select v-model="selectedModel" v-show="mode === 'local'" class="form-select form-select-sm" style="max-width: 200px;">
+          <option value="">— select Ollama —</option>
+          <option v-for="m in ollamaModels" :key="m.id" :value="m.id">{{ m.name }}</option>
+        </select>
+        <span v-show="mode === 'remote'" class="small text-muted align-middle">{{ config.remote?.model || '—' }}</span>
+        <button class="btn btn-success btn-sm" :disabled="!canStart || state.running.gateway" @click="start">Start</button>
+        <button class="btn btn-danger btn-sm" :disabled="!state.running.gateway && !state.running.dashboard" @click="stop">Stop</button>
+      </div>
+      <small class="text-muted" v-if="!state.running.gateway">Saved: {{ mode }} · {{ state.model || config[mode]?.model || '—' }}</small>
+      <small class="text-muted" v-if="state.running.gateway">Running · {{ state.mode || mode }} · {{ state.model || '—' }}</small>
+    </div>
+
+    <!-- Heartbeat -->
+    <div class="mc-card">
+      <h6>Heartbeat</h6>
+      <div class="d-flex align-items-center flex-wrap gap-2">
+        <span><span class="status-dot" :class="heartbeat.gateway?.ok ? 'ok' : 'err'"></span>Gateway {{ heartbeat.gateway?.ok ? 'up' : 'down' }}</span>
+        <span v-if="heartbeat.state?.lastHeartbeatAt" class="text-muted">Last {{ formatAgo(heartbeat.state.lastHeartbeatAt) }}</span>
+      </div>
+    </div>
+
+    <!-- Activity -->
+    <div class="mc-card">
+      <h6>Activity</h6>
+      <div v-if="activity.length === 0" class="small text-muted py-1">No activity</div>
+      <div v-else>
+        <div v-for="(a, i) in activity" :key="i" class="mc-list-item" @click="openActivity(a)">
+          <span class="small text-muted">{{ a.date }}</span> {{ a.description | truncate(60) }}
+        </div>
+      </div>
+    </div>
+
+    <!-- Cron jobs -->
+    <div class="mc-card">
+      <h6>Cron jobs</h6>
+      <div v-if="cronJobs.length === 0" class="small text-muted py-1">None</div>
+      <div v-else>
+        <div v-for="j in cronJobs" :key="j.jobId || j.name" class="mc-list-item d-flex justify-content-between align-items-center" @click="openCron(j)">
+          <span>{{ j.name }}</span>
+          <span class="badge" :class="j.enabled ? 'bg-success' : 'bg-secondary'">{{ j.enabled ? 'on' : 'off' }}</span>
+        </div>
+      </div>
+    </div>
+
+    <!-- Activity detail modal (inside #app so Vue compiles it) -->
+    <div class="modal fade" id="activityModal" tabindex="-1">
+      <div class="modal-dialog modal-dialog-centered">
+        <div class="modal-content">
+          <div class="modal-header py-2">
+            <h6 class="modal-title">{{ detailActivity.date }}</h6>
+            <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
+          </div>
+          <div class="modal-body py-2">
+            <p class="mb-1">{{ detailActivity.description }}</p>
+            <small class="text-muted">File: {{ detailActivity.file }}</small>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Cron detail modal (inside #app so Vue compiles it) -->
+    <div class="modal fade" id="cronModal" tabindex="-1">
+      <div class="modal-dialog modal-dialog-centered">
+        <div class="modal-content">
+          <div class="modal-header py-2">
+            <h6 class="modal-title">{{ detailCron.name || 'Cron job' }}</h6>
+            <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
+          </div>
+          <div class="modal-body py-2">
+            <div class="accordion" v-if="detailCron.schedule || detailCron.payload">
+              <div class="accordion-item" v-if="detailCron.schedule">
+                <h2 class="accordion-header">
+                  <button class="accordion-button collapsed" type="button" data-bs-toggle="collapse" data-bs-target="#cronDetailSchedule">Schedule</button>
+                </h2>
+                <div id="cronDetailSchedule" class="accordion-collapse collapse">
+                  <div class="accordion-body py-1">
+                    <json-accordion :data="detailCron.schedule" id-prefix="cron-schedule"></json-accordion>
+                  </div>
+                </div>
+              </div>
+              <div class="accordion-item" v-if="detailCron.payload">
+                <h2 class="accordion-header">
+                  <button class="accordion-button collapsed" type="button" data-bs-toggle="collapse" data-bs-target="#cronDetailPayload">Payload</button>
+                </h2>
+                <div id="cronDetailPayload" class="accordion-collapse collapse">
+                  <div class="accordion-body py-1">
+                    <json-accordion :data="detailCron.payload" id-prefix="cron-payload"></json-accordion>
+                  </div>
+                </div>
+              </div>
+            </div>
+            <p class="mb-1 mt-2" v-if="detailCron.sessionTarget"><strong>Target</strong> {{ detailCron.sessionTarget }}</p>
+            <span class="badge" :class="detailCron.enabled !== false ? 'bg-success' : 'bg-secondary'">{{ detailCron.enabled !== false ? 'enabled' : 'disabled' }}</span>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/js/bootstrap.bundle.min.js"></script>
+  <script src="/vendor/vue.global.prod.js"></script>
+  <script>
+    Vue.config.productionTip = false;
+    Vue.filter('truncate', function (v, len) {
+      if (!v) return '';
+      return v.length <= len ? v : v.slice(0, len) + '…';
+    });
+
+    Vue.component('json-accordion', {
+      name: 'JsonAccordion',
+      props: { data: { type: Object, default: null }, idPrefix: { type: String, default: 'obj' } },
+      template: '<div class="accordion" v-if="data">' +
+        '<div class="accordion-item" v-for="(value, key) in data" :key="key">' +
+          '<h2 class="accordion-header">' +
+            '<button class="accordion-button collapsed" type="button" :data-bs-toggle="\'collapse\'" :data-bs-target="\'#\' + safeId(key)" aria-expanded="false">' +
+              '{{ key }}' +
+            '</button>' +
+          '</h2>' +
+          '<div :id="safeId(key)" class="accordion-collapse collapse">' +
+            '<div class="accordion-body py-1">' +
+              '<template v-if="isObject(value)">' +
+                '<json-accordion :data="value" :id-prefix="idPrefix + \'-\' + safeId(key)"></json-accordion>' +
+              '</template>' +
+              '<template v-else-if="Array.isArray(value)">' +
+                '<ul class="list-unstyled mb-0 small"><li v-for="(item, i) in value" :key="i" class="obj-row"><span class="obj-key">{{ i }}:</span> {{ item }}</li></ul>' +
+              '</template>' +
+              '<div v-else class="obj-row">{{ value }}</div>' +
+            '</div>' +
+          '</div>' +
+        '</div>' +
+      '</div>',
+      methods: {
+        safeId(key) {
+          return this.idPrefix + '-' + String(key).replace(/[^a-z0-9-_]/gi, '-');
+        },
+        isObject(v) {
+          return v !== null && typeof v === 'object' && !Array.isArray(v);
+        }
+      }
+    });
+
+    new Vue({
+      el: '#app',
+      data: {
+        mode: 'local',
+        selectedModel: '',
+        ollamaModels: [],
+        config: { mode: 'local', local: {}, remote: {} },
+        state: { gatewayPid: null, dashboardPid: null, model: null, mode: null, running: { gateway: false, dashboard: false } },
+        activity: [],
+        cronJobs: [],
+        heartbeat: { gateway: {}, state: {} },
+        detailActivity: {},
+        detailCron: {},
+        activityModal: null,
+        cronModal: null,
+      },
+      mounted() {
+        if (window.__OLLAMA_MODELS__ && window.__OLLAMA_MODELS__.length) {
+          this.ollamaModels = window.__OLLAMA_MODELS__;
+          if (!this.selectedModel) this.selectedModel = this.ollamaModels[0].id;
+        }
+        this.activityModal = new bootstrap.Modal(document.getElementById('activityModal'));
+        this.cronModal = new bootstrap.Modal(document.getElementById('cronModal'));
+        this.refresh();
+        setInterval(this.refresh, 25000);
+      },
+      methods: {
+        formatAgo(ts) {
+          const s = Math.floor((Date.now() - ts) / 1000);
+          if (s < 60) return 'just now';
+          if (s < 3600) return Math.floor(s / 60) + 'm ago';
+          if (s < 86400) return Math.floor(s / 3600) + 'h ago';
+          return Math.floor(s / 86400) + 'd ago';
+        },
+        async refresh() {
+          try {
+            const [stateRes, activityRes, cronRes, heartbeatRes, configRes] = await Promise.all([
+              fetch('/api/state'),
+              fetch('/api/activity'),
+              fetch('/api/cron'),
+              fetch('/api/heartbeat'),
+              fetch('/api/config').catch(() => ({ ok: false })),
+            ]);
+            if (stateRes.ok) this.state = await stateRes.json();
+            if (activityRes.ok) this.activity = await activityRes.json();
+            if (cronRes.ok) this.cronJobs = (await cronRes.json()).jobs || [];
+            if (heartbeatRes.ok) this.heartbeat = await heartbeatRes.json();
+            if (configRes.ok) {
+              const cfg = await configRes.json();
+              this.config = cfg;
+              if (cfg.mode) this.mode = cfg.mode;
+              if (cfg.local?.model) this.selectedModel = this.selectedModel || cfg.local.model;
+            }
+            const modelsRes = await fetch('/api/ollama-models');
+            if (modelsRes.ok) {
+              const data = await modelsRes.json();
+              this.ollamaModels = data.models || [];
+              if (!this.selectedModel && this.ollamaModels.length) this.selectedModel = this.ollamaModels[0].id;
+            } else if (this.ollamaModels.length === 0 && window.__OLLAMA_MODELS__) {
+              this.ollamaModels = window.__OLLAMA_MODELS__;
+            }
+          } catch (e) {}
+        },
+        canStart() {
+          if (this.mode === 'local') return !!this.selectedModel;
+          return !!this.config.remote?.model;
+        },
+        async start() {
+          if (!this.canStart()) return;
+          try {
+            await fetch('/api/config', {
+              method: 'PATCH',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                mode: this.mode,
+                localModel: this.mode === 'local' ? this.selectedModel : undefined,
+              }),
+            });
+            const model = this.mode === 'local' ? this.selectedModel : this.config.remote?.model;
+            const res = await fetch('/api/start', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ mode: this.mode, model }),
+            });
+            const data = await res.json();
+            if (data.error) alert(data.error);
+            else this.refresh();
+          } catch (e) {
+            alert(e.message);
+          }
+        },
+        async stop() {
+          try {
+            await fetch('/api/stop', { method: 'POST' });
+            this.refresh();
+          } catch (e) {
+            alert(e.message);
+          }
+        },
+        openActivity(a) {
+          this.detailActivity = a;
+          this.activityModal.show();
+        },
+        openCron(j) {
+          this.detailCron = j;
+          this.cronModal.show();
+        },
+      },
+    });
+  </script>
+</body>
+</html>

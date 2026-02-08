@@ -1,0 +1,17 @@
+{
+  "name": "claw-mgr",
+  "version": "1.0.0",
+  "description": "Claw Mgr — OpenClaw gateway/dashboard control UI",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node server.js"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "express": "^4.22.1",
+    "vue": "^2.7.16"
+  }
+}
