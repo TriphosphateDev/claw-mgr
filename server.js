@@ -10,7 +10,7 @@ const isWindows = process.platform === 'win32';
 const workspaceRoot = path.join(__dirname, '..');
 const CONFIG_PATH = path.join(workspaceRoot, 'startup-config.json');
 const OPENCLAW_CONFIG_PATH = path.join(os.homedir(), '.openclaw', 'openclaw.json');
-const STATE_PATH = path.join(__dirname, '.mc-state.json');
+const STATE_PATH = path.join(__dirname, '.claw-mgr-state.json');
 const MEMORY_DIR = path.join(workspaceRoot, 'memory');
 const HEARTBEAT_STATE_PATH = path.join(MEMORY_DIR, 'heartbeat-state.json');
 const CRON_JOBS_PATH = path.join(os.homedir(), '.openclaw', 'cron', 'jobs.json');
@@ -44,17 +44,33 @@ async function fetchOllamaModels() {
 // Serve index with Ollama models preloaded so the UI has the list before Vue mounts
 const indexPath = path.join(__dirname, 'public', 'index.html');
 const PRELOAD_PLACEHOLDER = 'window.__OLLAMA_MODELS__ = [];';
+const REMOTE_PROVIDERS_PLACEHOLDER = 'window.__REMOTE_PROVIDERS__ = [];';
+const SERVED_FROM_PLACEHOLDER = '<!-- __SERVED_FROM__ -->';
 
 app.get('/', async (req, res) => {
   const models = await fetchOllamaModels();
   let html = fs.readFileSync(indexPath, 'utf8');
   html = html.replace(PRELOAD_PLACEHOLDER, `window.__OLLAMA_MODELS__ = ${JSON.stringify(models)};`);
+  html = html.replace(REMOTE_PROVIDERS_PLACEHOLDER, `window.__REMOTE_PROVIDERS__ = ${JSON.stringify(REMOTE_PROVIDERS_LIST)};`);
+  html = html.replace(SERVED_FROM_PLACEHOLDER, `<!-- served from: ${indexPath} -->`);
+  res.set({
+    'Cache-Control': 'no-store, no-cache, must-revalidate',
+    Pragma: 'no-cache',
+    Expires: '0',
+  });
   res.type('html').send(html);
 });
 app.get('/index.html', async (req, res) => {
   const models = await fetchOllamaModels();
   let html = fs.readFileSync(indexPath, 'utf8');
   html = html.replace(PRELOAD_PLACEHOLDER, `window.__OLLAMA_MODELS__ = ${JSON.stringify(models)};`);
+  html = html.replace(REMOTE_PROVIDERS_PLACEHOLDER, `window.__REMOTE_PROVIDERS__ = ${JSON.stringify(REMOTE_PROVIDERS_LIST)};`);
+  html = html.replace(SERVED_FROM_PLACEHOLDER, `<!-- served from: ${indexPath} -->`);
+  res.set({
+    'Cache-Control': 'no-store, no-cache, must-revalidate',
+    Pragma: 'no-cache',
+    Expires: '0',
+  });
   res.type('html').send(html);
 });
 
@@ -104,6 +120,55 @@ app.get('/api/ollama-models', async (req, res) => {
   res.json({ models });
 });
 
+// Remote provider list: models are { id, ctx } where ctx = context window (e.g. "128K", "1M")
+const REMOTE_PROVIDERS_LIST = [
+  { id: 'xai', label: 'xAI (Grok)', envKey: 'XAI_API_KEY', models: [
+    { id: 'grok-2', ctx: '128K' }, { id: 'grok-2-mini', ctx: '128K' }, { id: 'grok-2-vision-preview', ctx: '128K' },
+    { id: 'grok-3', ctx: '1M' }, { id: 'grok-3-mini', ctx: '1M' }, { id: 'grok-3-fast', ctx: '1M' },
+  ] },
+  { id: 'openai', label: 'OpenAI', envKey: 'OPENAI_API_KEY', models: [
+    { id: 'gpt-4o', ctx: '128K' }, { id: 'gpt-4o-mini', ctx: '128K' }, { id: 'gpt-4.1', ctx: '1M' },
+    { id: 'gpt-4-turbo', ctx: '128K' }, { id: 'gpt-5.1-codex', ctx: '1M' }, { id: 'o1', ctx: '200K' }, { id: 'o1-mini', ctx: '200K' },
+  ] },
+  { id: 'anthropic', label: 'Anthropic', envKey: 'ANTHROPIC_API_KEY', models: [
+    { id: 'claude-opus-4-6', ctx: '200K' }, { id: 'claude-sonnet-4-5', ctx: '200K' },
+    { id: 'claude-3-5-sonnet-20241022', ctx: '200K' }, { id: 'claude-3-5-haiku', ctx: '200K' },
+  ] },
+  { id: 'openrouter', label: 'OpenRouter', envKey: 'OPENROUTER_API_KEY', models: [
+    { id: 'anthropic/claude-sonnet-4-5', ctx: '200K' }, { id: 'openai/gpt-4o', ctx: '128K' },
+    { id: 'google/gemini-2.0-flash', ctx: '1M' }, { id: 'meta-llama/llama-3.3-70b-instruct', ctx: '128K' },
+  ] },
+  { id: 'google', label: 'Google (Gemini)', envKey: 'GEMINI_API_KEY', models: [
+    { id: 'gemini-2.0-flash', ctx: '1M' }, { id: 'gemini-2.5-pro-preview', ctx: '1M' }, { id: 'gemini-3-pro-preview', ctx: '1M' },
+  ] },
+  { id: 'groq', label: 'Groq', envKey: 'GROQ_API_KEY', models: [
+    { id: 'llama-3.3-70b-versatile', ctx: '128K' }, { id: 'llama-3.1-70b-versatile', ctx: '128K' },
+    { id: 'llama-3.1-8b-instant', ctx: '128K' }, { id: 'mixtral-8x7b-32768', ctx: '32K' },
+  ] },
+  { id: 'mistral', label: 'Mistral', envKey: 'MISTRAL_API_KEY', models: [
+    { id: 'mistral-large-latest', ctx: '128K' }, { id: 'mistral-small-latest', ctx: '33K' }, { id: 'codestral-latest', ctx: '128K' },
+  ] },
+  { id: 'cerebras', label: 'Cerebras', envKey: 'CEREBRAS_API_KEY', models: [
+    { id: 'llama-3.3-70b', ctx: '128K' }, { id: 'llama-3.1-8b', ctx: '32K' }, { id: 'zai-glm-4.7', ctx: '128K' }, { id: 'zai-glm-4.6', ctx: '128K' },
+  ] },
+  { id: 'vercel-ai-gateway', label: 'Vercel AI Gateway', envKey: 'AI_GATEWAY_API_KEY', models: [
+    { id: 'anthropic/claude-opus-4.6', ctx: '200K' }, { id: 'openai/gpt-4o', ctx: '128K' }, { id: 'openai/gpt-4o-mini', ctx: '128K' },
+  ] },
+  { id: 'opencode', label: 'OpenCode Zen', envKey: 'OPENCODE_ZEN_API_KEY', models: [
+    { id: 'claude-opus-4-6', ctx: '200K' }, { id: 'claude-sonnet-4-5', ctx: '200K' },
+  ] },
+  { id: 'moonshot', label: 'Moonshot (Kimi)', envKey: 'MOONSHOT_API_KEY', models: [
+    { id: 'kimi-k2.5', ctx: '128K' }, { id: 'kimi-k2-0905-preview', ctx: '128K' }, { id: 'kimi-k2-turbo-preview', ctx: '128K' }, { id: 'kimi-k2-thinking', ctx: '256K' },
+  ] },
+  { id: 'synthetic', label: 'Synthetic', envKey: 'SYNTHETIC_API_KEY', models: [{ id: 'hf:MiniMaxAI/MiniMax-M2.1', ctx: '128K' }] },
+  { id: 'minimax', label: 'MiniMax', envKey: 'MINIMAX_API_KEY', models: [{ id: 'MiniMax-M2.1', ctx: '128K' }] },
+  { id: 'other', label: 'Other (custom)', envKey: null, models: [] },
+];
+
+app.get('/api/remote-providers', (req, res) => {
+  res.json({ providers: REMOTE_PROVIDERS_LIST });
+});
+
 // GET /api/config — startup-config.json (for current local model display)
 app.get('/api/config', (req, res) => {
   try {
@@ -115,10 +180,27 @@ app.get('/api/config', (req, res) => {
   }
 });
 
-// PATCH /api/config — update mode (local|remote) and/or local.model (selected in UI)
+// Remote provider id -> env var for API key (OpenClaw convention)
+const REMOTE_API_KEY_ENV = {
+  xai: 'XAI_API_KEY',
+  openai: 'OPENAI_API_KEY',
+  anthropic: 'ANTHROPIC_API_KEY',
+  openrouter: 'OPENROUTER_API_KEY',
+  google: 'GEMINI_API_KEY',
+  groq: 'GROQ_API_KEY',
+  mistral: 'MISTRAL_API_KEY',
+  cerebras: 'CEREBRAS_API_KEY',
+  'vercel-ai-gateway': 'AI_GATEWAY_API_KEY',
+  opencode: 'OPENCODE_ZEN_API_KEY',
+  moonshot: 'MOONSHOT_API_KEY',
+  synthetic: 'SYNTHETIC_API_KEY',
+  minimax: 'MINIMAX_API_KEY',
+};
+
+// PATCH /api/config — update mode (local|remote) and/or local/remote config
 app.patch('/api/config', (req, res) => {
   try {
-    const { mode, localModel, remoteModel } = req.body;
+    const { mode, localModel, remoteModel, remote } = req.body;
     let config = {};
     if (fs.existsSync(CONFIG_PATH)) {
       config = JSON.parse(fs.readFileSync(CONFIG_PATH, 'utf8'));
@@ -134,10 +216,20 @@ app.patch('/api/config', (req, res) => {
       if (!config.remote) config.remote = {};
       config.remote.model = remoteModel;
     }
+    if (remote && typeof remote === 'object') {
+      if (!config.remote) config.remote = {};
+      if (typeof remote.provider === 'string') config.remote.provider = remote.provider;
+      if (typeof remote.model === 'string') config.remote.model = remote.model;
+      if (typeof remote.baseUrl === 'string') config.remote.baseUrl = remote.baseUrl.trim() || undefined;
+      if (remote.baseUrl === '') delete config.remote.baseUrl;
+      if (typeof remote.apiKeyEnv === 'string') config.remote.apiKeyEnv = remote.apiKeyEnv.trim() || undefined;
+      if (remote.apiKeyEnv === '') delete config.remote.apiKeyEnv;
+    }
     fs.writeFileSync(CONFIG_PATH, JSON.stringify(config, null, 2), 'utf8');
     const state = readState();
     if (config.mode) state.mode = config.mode;
     if (typeof localModel === 'string') state.model = localModel;
+    if (config.remote?.model) state.model = config.remote.model;
     writeState(state);
     res.json(config);
   } catch (e) {
@@ -198,6 +290,16 @@ app.post('/api/start', (req, res) => {
     WORKSPACE_OPENCLAW_MODEL: model,
     ...(mode === 'local' ? { XAI_API_KEY: '' } : {}),
   };
+  if (mode === 'remote') {
+    const apiKeyEnv = config.remote?.apiKeyEnv || REMOTE_API_KEY_ENV[config.remote?.provider];
+    if (typeof req.body.remoteApiKey === 'string' && req.body.remoteApiKey.trim()) {
+      if (apiKeyEnv) env[apiKeyEnv] = req.body.remoteApiKey.trim();
+    }
+    if (config.remote?.baseUrl) {
+      env.OPENAI_BASE_URL = config.remote.baseUrl;
+      env.ANTHROPIC_BASE_URL = config.remote.baseUrl;
+    }
+  }
   const spawnOpts = (customEnv = {}) => ({
     cwd: workspaceRoot,
     env: { ...env, ...customEnv },
@@ -340,11 +442,22 @@ app.get('/api/heartbeat', async (req, res) => {
   res.json({ gateway, state });
 });
 
-// SPA fallback
-app.get('*', (req, res) => {
-  res.sendFile(path.join(__dirname, 'public', 'index.html'));
+// SPA fallback — serve same HTML as / so preloads and no-cache apply
+app.get('*', async (req, res) => {
+  const models = await fetchOllamaModels().catch(() => []);
+  let html = fs.readFileSync(indexPath, 'utf8');
+  html = html.replace(PRELOAD_PLACEHOLDER, `window.__OLLAMA_MODELS__ = ${JSON.stringify(models)};`);
+  html = html.replace(REMOTE_PROVIDERS_PLACEHOLDER, `window.__REMOTE_PROVIDERS__ = ${JSON.stringify(REMOTE_PROVIDERS_LIST)};`);
+  html = html.replace(SERVED_FROM_PLACEHOLDER, `<!-- served from: ${indexPath} -->`);
+  res.set({
+    'Cache-Control': 'no-store, no-cache, must-revalidate',
+    Pragma: 'no-cache',
+    Expires: '0',
+  });
+  res.type('html').send(html);
 });
 
 app.listen(PORT, () => {
   console.log(`Claw Mgr at http://127.0.0.1:${PORT}`);
+  console.log(`Serving HTML from: ${path.resolve(indexPath)}`);
 });

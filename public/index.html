@@ -4,6 +4,8 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Claw Mgr</title>
+  <!-- build: remote-dropdowns -->
+  <!-- __SERVED_FROM__ -->
   <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet">
   <style>
     :root { --mc-bg: #0d1117; --mc-card: #161b22; --mc-border: #30363d; --mc-text: #e6edf3; --mc-muted: #c9d1d9; }
@@ -43,7 +45,7 @@
   </style>
 </head>
 <body>
-  <script>window.__OLLAMA_MODELS__ = [];</script>
+  <script>window.__OLLAMA_MODELS__ = []; window.__REMOTE_PROVIDERS__ = [];</script>
   <div id="app" class="container-fluid py-2 px-2 px-sm-3" style="max-width: 640px;">
     <h1 class="h5 mb-2 mt-1 fw-bold">Claw Mgr</h1>
 
@@ -59,12 +61,63 @@
           <option value="">— select Ollama —</option>
           <option v-for="m in ollamaModels" :key="m.id" :value="m.id">{{ m.name }}</option>
         </select>
-        <span v-show="mode === 'remote'" class="small text-muted align-middle">{{ config.remote?.model || '—' }}</span>
+        <div v-show="mode === 'remote'" class="d-inline-flex flex-wrap align-items-center gap-1">
+          <select v-model="remoteProvider" @change="onRemoteProviderChange" class="form-select form-select-sm" style="min-width: 130px; max-width: 160px;" title="Choose API provider">
+            <option value="">— provider —</option>
+            <option v-for="p in remoteProviders" :key="p.id" :value="p.id">{{ p.label }}</option>
+            <option v-if="remoteProviders.length === 0" value="" disabled>Loading…</option>
+          </select>
+          <select v-if="remoteProvider && remoteProvider !== 'other'" v-model="remoteModel" @change="saveRemoteConfig" class="form-select form-select-sm" style="min-width: 160px; max-width: 220px;">
+            <option value="">— model —</option>
+            <option v-for="m in currentRemoteProviderModels" :key="modelId(m)" :value="modelId(m)">{{ modelLabel(m) }}</option>
+          </select>
+          <input v-if="remoteProvider === 'other'" v-model="remoteCustomModel" @input="saveRemoteConfig" type="text" class="form-control form-control-sm" style="min-width: 120px; max-width: 180px;" placeholder="provider/model" />
+        </div>
         <button class="btn btn-success btn-sm" :disabled="!canStart || state.running.gateway" @click="start">Start</button>
         <button class="btn btn-danger btn-sm" :disabled="!state.running.gateway && !state.running.dashboard" @click="stop">Stop</button>
       </div>
       <small class="text-muted" v-if="!state.running.gateway">Saved: {{ mode }} · {{ state.model || config[mode]?.model || '—' }}</small>
       <small class="text-muted" v-if="state.running.gateway">Running · {{ state.mode || mode }} · {{ state.model || '—' }}</small>
+    </div>
+
+    <!-- Remote API options (only when Remote mode) -->
+    <div class="mc-card" v-show="mode === 'remote'">
+      <h6>Remote API</h6>
+      <div class="row g-1 mb-1">
+        <div class="col-12 col-sm-6">
+          <label class="form-label small mb-0 text-muted">Provider</label>
+          <select v-model="remoteProvider" @change="onRemoteProviderChange" class="form-select form-select-sm">
+            <option value="">— select —</option>
+            <option v-for="p in remoteProviders" :key="p.id" :value="p.id">{{ p.label }}</option>
+          </select>
+        </div>
+        <div class="col-12 col-sm-6" v-if="remoteProvider && remoteProvider !== 'other'">
+          <label class="form-label small mb-0 text-muted">Model</label>
+          <select v-model="remoteModel" @change="saveRemoteConfig" class="form-select form-select-sm">
+            <option value="">— select —</option>
+            <option v-for="m in currentRemoteProviderModels" :key="modelId(m)" :value="modelId(m)">{{ modelLabel(m) }}</option>
+          </select>
+        </div>
+        <div class="col-12 col-sm-6" v-if="remoteProvider === 'other'">
+          <label class="form-label small mb-0 text-muted">Model (provider/id)</label>
+          <input v-model="remoteCustomModel" @input="saveRemoteConfig" type="text" class="form-control form-control-sm" placeholder="e.g. custom/gpt-4o" />
+        </div>
+        <div class="col-12 col-sm-6" v-if="remoteProvider === 'other'">
+          <label class="form-label small mb-0 text-muted">API key env var (optional)</label>
+          <input v-model="remoteCustomEnvKey" @input="saveRemoteConfig" type="text" class="form-control form-control-sm" placeholder="e.g. CUSTOM_API_KEY" />
+        </div>
+      </div>
+      <div class="row g-1 mb-1">
+        <div class="col-12 col-sm-6">
+          <label class="form-label small mb-0 text-muted">API key (optional — use env if blank)</label>
+          <input v-model="remoteApiKey" type="password" class="form-control form-control-sm" placeholder="Leave blank to use ~/.openclaw/.env" autocomplete="off" />
+        </div>
+        <div class="col-12 col-sm-6">
+          <label class="form-label small mb-0 text-muted">Base URL (optional)</label>
+          <input v-model="remoteBaseUrl" @input="saveRemoteConfig" type="text" class="form-control form-control-sm" placeholder="https://api.example.com/v1" />
+        </div>
+      </div>
+      <small class="text-muted" v-if="currentRemoteEnvKey">Env key: {{ currentRemoteEnvKey }}</small>
     </div>
 
     <!-- Heartbeat -->
@@ -211,6 +264,32 @@
         detailCron: {},
         activityModal: null,
         cronModal: null,
+        remoteProviders: (typeof window !== 'undefined' && window.__REMOTE_PROVIDERS__) ? window.__REMOTE_PROVIDERS__ : [],
+        remoteProvider: '',
+        remoteModel: '',
+        remoteCustomModel: '',
+        remoteApiKey: '',
+        remoteBaseUrl: '',
+        remoteCustomEnvKey: '',
+      },
+      computed: {
+        currentRemoteProviderModels() {
+          const p = this.remoteProviders.find((x) => x.id === this.remoteProvider);
+          return p && p.models ? p.models : [];
+        },
+        currentRemoteEnvKey() {
+          if (this.remoteProvider === 'other') return this.remoteCustomEnvKey || this.config.remote?.apiKeyEnv || '';
+          const p = this.remoteProviders.find((x) => x.id === this.remoteProvider);
+          return p && p.envKey ? p.envKey : '';
+        },
+        displayRemoteModel() {
+          return this.effectiveRemoteModel || '—';
+        },
+        effectiveRemoteModel() {
+          if (this.remoteProvider === 'other') return this.remoteCustomModel || this.config.remote?.model || '';
+          if (this.remoteProvider && this.remoteModel) return this.remoteProvider + '/' + this.remoteModel;
+          return this.config.remote?.model || '';
+        },
       },
       mounted() {
         if (window.__OLLAMA_MODELS__ && window.__OLLAMA_MODELS__.length) {
@@ -232,22 +311,48 @@
         },
         async refresh() {
           try {
-            const [stateRes, activityRes, cronRes, heartbeatRes, configRes] = await Promise.all([
+            const [stateRes, activityRes, cronRes, heartbeatRes, configRes, providersRes] = await Promise.all([
               fetch('/api/state'),
               fetch('/api/activity'),
               fetch('/api/cron'),
               fetch('/api/heartbeat'),
               fetch('/api/config').catch(() => ({ ok: false })),
+              fetch('/api/remote-providers').catch(() => ({ ok: false })),
             ]);
             if (stateRes.ok) this.state = await stateRes.json();
             if (activityRes.ok) this.activity = await activityRes.json();
             if (cronRes.ok) this.cronJobs = (await cronRes.json()).jobs || [];
             if (heartbeatRes.ok) this.heartbeat = await heartbeatRes.json();
+            if (providersRes.ok) {
+              const data = await providersRes.json();
+              this.remoteProviders = data.providers || [];
+            }
             if (configRes.ok) {
               const cfg = await configRes.json();
               this.config = cfg;
               if (cfg.mode) this.mode = cfg.mode;
               if (cfg.local?.model) this.selectedModel = this.selectedModel || cfg.local.model;
+              if (cfg.remote) {
+                this.remoteProvider = cfg.remote.provider || '';
+                this.remoteBaseUrl = cfg.remote.baseUrl || '';
+                this.remoteCustomEnvKey = cfg.remote.apiKeyEnv || '';
+                if (cfg.remote.model) {
+                  const slash = cfg.remote.model.indexOf('/');
+                  if (slash > 0) {
+                    const prov = cfg.remote.model.slice(0, slash);
+                    const modelId = cfg.remote.model.slice(slash + 1);
+                    if (prov === 'other' || !this.remoteProviders.find((p) => p.id === prov)) {
+                      this.remoteProvider = 'other';
+                      this.remoteCustomModel = cfg.remote.model;
+                    } else {
+                      this.remoteProvider = prov;
+                      this.remoteModel = modelId;
+                    }
+                  } else {
+                    this.remoteCustomModel = cfg.remote.model;
+                  }
+                }
+              }
             }
             const modelsRes = await fetch('/api/ollama-models');
             if (modelsRes.ok) {
@@ -261,7 +366,35 @@
         },
         canStart() {
           if (this.mode === 'local') return !!this.selectedModel;
-          return !!this.config.remote?.model;
+          return !!this.effectiveRemoteModel;
+        },
+        modelId(m) {
+          return typeof m === 'object' && m && m.id != null ? m.id : m;
+        },
+        modelLabel(m) {
+          if (typeof m === 'object' && m && m.id != null) {
+            return m.ctx ? m.id + ' · ' + m.ctx : m.id;
+          }
+          return String(m);
+        },
+        onRemoteProviderChange() {
+          this.remoteModel = '';
+          this.remoteCustomModel = '';
+          this.saveRemoteConfig();
+        },
+        saveRemoteConfig() {
+          const model = this.effectiveRemoteModel;
+          const remote = {
+            provider: this.remoteProvider || undefined,
+            model: model || undefined,
+            baseUrl: this.remoteBaseUrl.trim() || undefined,
+            apiKeyEnv: this.remoteProvider === 'other' ? (this.remoteCustomEnvKey.trim() || undefined) : undefined,
+          };
+          fetch('/api/config', {
+            method: 'PATCH',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ mode: 'remote', remote }),
+          }).then((r) => r.ok && r.json().then((c) => { this.config = c; }));
         },
         async start() {
           if (!this.canStart()) return;
@@ -272,13 +405,18 @@
               body: JSON.stringify({
                 mode: this.mode,
                 localModel: this.mode === 'local' ? this.selectedModel : undefined,
+                ...(this.mode === 'remote' ? { remote: { provider: this.remoteProvider, model: this.effectiveRemoteModel, baseUrl: this.remoteBaseUrl.trim() || undefined, apiKeyEnv: this.remoteProvider === 'other' ? (this.remoteCustomEnvKey.trim() || undefined) : undefined } } : {}),
               }),
             });
-            const model = this.mode === 'local' ? this.selectedModel : this.config.remote?.model;
+            const model = this.mode === 'local' ? this.selectedModel : this.effectiveRemoteModel;
             const res = await fetch('/api/start', {
               method: 'POST',
               headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ mode: this.mode, model }),
+              body: JSON.stringify({
+                mode: this.mode,
+                model,
+                ...(this.mode === 'remote' && this.remoteApiKey.trim() ? { remoteApiKey: this.remoteApiKey.trim() } : {}),
+              }),
             });
             const data = await res.json();
             if (data.error) alert(data.error);
