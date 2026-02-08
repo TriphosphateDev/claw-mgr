@@ -410,6 +410,7 @@ app.get('/api/remote-providers', (req, res) => {
   res.json({ providers: REMOTE_PROVIDERS_LIST });
 });
 
+
 // GET /api/config — startup-config.json (for current local model display)
 app.get('/api/config', (req, res) => {
   try {
@@ -437,6 +438,22 @@ const REMOTE_API_KEY_ENV = {
   synthetic: 'SYNTHETIC_API_KEY',
   minimax: 'MINIMAX_API_KEY',
 };
+
+// GET /api/check-remote-credentials?provider=xai or &apiKeyEnv=CUSTOM_KEY (for "other")
+// Returns { envKey, set } so UI can prompt user to set env or enter key.
+app.get('/api/check-remote-credentials', (req, res) => {
+  const provider = req.query.provider;
+  const apiKeyEnv = req.query.apiKeyEnv;
+  const envKey = typeof apiKeyEnv === 'string' && apiKeyEnv.trim()
+    ? apiKeyEnv.trim()
+    : (provider && REMOTE_API_KEY_ENV[provider]);
+  if (!envKey) {
+    return res.json({ envKey: null, set: false });
+  }
+  const val = process.env[envKey];
+  const set = !!(typeof val === 'string' && val.trim().length > 0);
+  res.json({ envKey, set });
+});
 
 // PATCH /api/config — update mode (local|remote) and/or local/remote config
 app.patch('/api/config', (req, res) => {
@@ -662,10 +679,24 @@ app.post('/api/notifications/dismiss', (req, res) => {
   res.json(notifications.dismiss({ id, beforeTs }));
 });
 
-// GET /api/cron
+// GET /api/cron — include last run timestamp per job for UI
 app.get('/api/cron', (req, res) => {
   const jobs = readJobs();
-  res.json({ jobs });
+  const enriched = jobs.map((j) => {
+    const jobId = j.jobId || j.id;
+    if (!jobId) return { ...j, lastRunTs: null, lastRunStatus: null };
+    const runs = readRuns(jobId, 1);
+    const latest = runs[0];
+    const lastRunTs = latest && (latest.ts != null || latest.timestamp != null)
+      ? (latest.ts ?? latest.timestamp)
+      : null;
+    return {
+      ...j,
+      lastRunTs: lastRunTs != null ? Number(lastRunTs) : null,
+      lastRunStatus: latest?.status ?? latest?.action ?? null,
+    };
+  });
+  res.json({ jobs: enriched });
 });
 
 // POST /api/cron/:jobId/run
