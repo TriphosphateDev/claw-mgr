@@ -49,6 +49,15 @@
   <div id="app" class="container-fluid py-2 px-2 px-sm-3" style="max-width: 640px;">
     <h1 class="h5 mb-2 mt-1 fw-bold">Claw Mgr</h1>
 
+    <div class="mc-card">
+      <h6>Dashboard</h6>
+      <div class="d-flex align-items-center justify-content-between gap-2 mb-1">
+        <small class="text-muted">OpenClaw status snapshot</small>
+        <button class="btn btn-outline-secondary btn-sm" @click="refreshDashboard">Refresh</button>
+      </div>
+      <pre style="max-height: 180px;">{{ dashboardSummaryRaw || 'No snapshot yet.' }}</pre>
+    </div>
+
     <!-- Mode + Model + Start/Stop -->
     <div class="mc-card">
       <h6>Model</h6>
@@ -145,9 +154,13 @@
       <h6>Cron jobs</h6>
       <div v-if="cronJobs.length === 0" class="small text-muted py-1">None</div>
       <div v-else>
-        <div v-for="j in cronJobs" :key="j.jobId || j.name" class="mc-list-item d-flex justify-content-between align-items-center" @click="openCron(j)">
-          <span>{{ j.name }}</span>
-          <span class="badge" :class="j.enabled ? 'bg-success' : 'bg-secondary'">{{ j.enabled ? 'on' : 'off' }}</span>
+        <div v-for="j in cronJobs" :key="j.jobId || j.name" class="mc-list-item d-flex justify-content-between align-items-center">
+          <span @click="openCron(j)" style="cursor:pointer;">{{ j.name }}</span>
+          <div class="d-flex align-items-center gap-1">
+            <button class="btn btn-outline-secondary btn-sm" @click="openCronRuns(j)">Runs</button>
+            <button class="btn btn-outline-secondary btn-sm" @click="runCronJob(j)">Run</button>
+            <span class="badge" :class="j.enabled ? 'bg-success' : 'bg-secondary'">{{ j.enabled ? 'on' : 'off' }}</span>
+          </div>
         </div>
       </div>
     </div>
@@ -201,6 +214,27 @@
             </div>
             <p class="mb-1 mt-2" v-if="detailCron.sessionTarget"><strong>Target</strong> {{ detailCron.sessionTarget }}</p>
             <span class="badge" :class="detailCron.enabled !== false ? 'bg-success' : 'bg-secondary'">{{ detailCron.enabled !== false ? 'enabled' : 'disabled' }}</span>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="modal fade" id="cronRunsModal" tabindex="-1">
+      <div class="modal-dialog modal-dialog-centered modal-lg">
+        <div class="modal-content">
+          <div class="modal-header py-2">
+            <h6 class="modal-title">Runs · {{ detailCron.name || detailCron.jobId }}</h6>
+            <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
+          </div>
+          <div class="modal-body py-2">
+            <div v-if="cronRuns.length === 0" class="small text-muted">No runs found.</div>
+            <div v-for="(r, idx) in cronRuns" :key="idx" class="mc-card mb-1">
+              <div class="d-flex align-items-center justify-content-between">
+                <strong>{{ r.status || r.action || 'run' }}</strong>
+                <small class="text-muted">{{ r.ts ? new Date(r.ts).toLocaleString() : 'unknown time' }}</small>
+              </div>
+              <pre>{{ JSON.stringify(r, null, 2) }}</pre>
+            </div>
           </div>
         </div>
       </div>
@@ -260,10 +294,13 @@
         activity: [],
         cronJobs: [],
         heartbeat: { gateway: {}, state: {} },
+        dashboardSummaryRaw: '',
+        cronRuns: [],
         detailActivity: {},
         detailCron: {},
         activityModal: null,
         cronModal: null,
+        cronRunsModal: null,
         remoteProviders: (typeof window !== 'undefined' && window.__REMOTE_PROVIDERS__) ? window.__REMOTE_PROVIDERS__ : [],
         remoteProvider: '',
         remoteModel: '',
@@ -298,6 +335,7 @@
         }
         this.activityModal = new bootstrap.Modal(document.getElementById('activityModal'));
         this.cronModal = new bootstrap.Modal(document.getElementById('cronModal'));
+        this.cronRunsModal = new bootstrap.Modal(document.getElementById('cronRunsModal'));
         this.refresh();
         setInterval(this.refresh, 25000);
       },
@@ -311,11 +349,12 @@
         },
         async refresh() {
           try {
-            const [stateRes, activityRes, cronRes, heartbeatRes, configRes, providersRes] = await Promise.all([
+            const [stateRes, activityRes, cronRes, heartbeatRes, dashboardRes, configRes, providersRes] = await Promise.all([
               fetch('/api/state'),
               fetch('/api/activity'),
               fetch('/api/cron'),
               fetch('/api/heartbeat'),
+              fetch('/api/dashboard/summary').catch(() => ({ ok: false })),
               fetch('/api/config').catch(() => ({ ok: false })),
               fetch('/api/remote-providers').catch(() => ({ ok: false })),
             ]);
@@ -323,6 +362,10 @@
             if (activityRes.ok) this.activity = await activityRes.json();
             if (cronRes.ok) this.cronJobs = (await cronRes.json()).jobs || [];
             if (heartbeatRes.ok) this.heartbeat = await heartbeatRes.json();
+            if (dashboardRes.ok) {
+              const dash = await dashboardRes.json();
+              this.dashboardSummaryRaw = dash?.data?.raw || '';
+            }
             if (providersRes.ok) {
               const data = await providersRes.json();
               this.remoteProviders = data.providers || [];
@@ -436,6 +479,37 @@
         openActivity(a) {
           this.detailActivity = a;
           this.activityModal.show();
+        },
+        async refreshDashboard() {
+          try {
+            const res = await fetch('/api/dashboard/summary');
+            if (res.ok) {
+              const data = await res.json();
+              this.dashboardSummaryRaw = data?.data?.raw || '';
+            }
+          } catch (e) {}
+        },
+        async runCronJob(j) {
+          try {
+            const res = await fetch('/api/cron/' + encodeURIComponent(j.jobId) + '/run', { method: 'POST' });
+            const data = await res.json();
+            if (!res.ok || !data.ok) alert(data?.data?.stderr || data?.error?.message || 'Cron run failed');
+            await this.refresh();
+          } catch (e) {
+            alert(e.message);
+          }
+        },
+        async openCronRuns(j) {
+          this.detailCron = j;
+          this.cronRuns = [];
+          try {
+            const res = await fetch('/api/cron/' + encodeURIComponent(j.jobId) + '/runs?limit=20');
+            if (res.ok) {
+              const data = await res.json();
+              this.cronRuns = data?.data?.runs || [];
+            }
+          } catch (e) {}
+          this.cronRunsModal.show();
         },
         openCron(j) {
           this.detailCron = j;
