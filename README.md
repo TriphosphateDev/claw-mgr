@@ -15,7 +15,7 @@ Web UI to control [OpenClaw](https://openclaw.ai) gateway and dashboard. Pick Lo
 ## Install
 
 ```bash
-git clone https://github.com/YOUR_USERNAME/claw-mgr.git
+git clone https://github.com/Ascendism/claw-mgr.git
 cd claw-mgr
 npm install
 ```
@@ -35,28 +35,6 @@ Set `PORT` to use another port (e.g. `PORT=3000 npm start`).
 - Node.js 18+
 - [OpenClaw](https://openclaw.ai) installed (`openclaw` on PATH)
 - For Local mode: [Ollama](https://ollama.com) running (for model list and inference)
-
-## Publish to GitHub
-
-From the `claw-mgr` directory:
-
-```bash
-cd claw-mgr
-npm install
-git init
-git add .
-git commit -m "Initial commit: Claw Mgr"
-```
-
-Create a new repository on GitHub (e.g. `claw-mgr`), then:
-
-```bash
-git remote add origin https://github.com/YOUR_USERNAME/claw-mgr.git
-git branch -M main
-git push -u origin main
-```
-
-Replace `YOUR_USERNAME` with your GitHub username. Others can then clone and use the repo.
 
 ## License
 
