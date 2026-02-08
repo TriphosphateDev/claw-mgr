@@ -5,6 +5,8 @@ const os = require('os');
 const { spawn } = require('child_process');
 const { getDashboardSummary } = require('./services/openclawStatus');
 const { readJobs, readRuns, runNow } = require('./services/openclawCron');
+const { createNotificationsStore } = require('./services/notifications');
+const { appendActivity } = require('./services/activityLog');
 
 const app = express();
 const PORT = Number(process.env.PORT) || 8011;
@@ -17,6 +19,243 @@ const MEMORY_DIR = path.join(workspaceRoot, 'memory');
 const HEARTBEAT_STATE_PATH = path.join(MEMORY_DIR, 'heartbeat-state.json');
 // cron jobs are handled via services/openclawCron.js
 const GATEWAY_URL = process.env.OPENCLAW_GATEWAY_URL || 'http://127.0.0.1:18789';
+
+// Local notifications store (append-only JSONL + dismiss state)
+const NOTIFICATIONS_DIR = path.join(__dirname, 'data');
+const notifications = createNotificationsStore({ baseDir: NOTIFICATIONS_DIR });
+
+// --- Notification triggers (high-signal only; state-change driven) ---
+const NOTIFY_WATCH_STATE_PATH = path.join(NOTIFICATIONS_DIR, 'notify-watch.json');
+const NOTIFY_POLL_MS = Number(process.env.CLAW_MGR_NOTIFY_POLL_MS || 30000);
+const HEARTBEAT_MISS_MS = Number(process.env.CLAW_MGR_HEARTBEAT_MISS_MS || 60 * 60 * 1000); // 60m
+
+function readJsonSafe(filePath, fallback) {
+  try {
+    if (!fs.existsSync(filePath)) return fallback;
+    return JSON.parse(fs.readFileSync(filePath, 'utf8'));
+  } catch {
+    return fallback;
+  }
+}
+
+function writeJsonSafe(filePath, obj) {
+  try {
+    fs.mkdirSync(path.dirname(filePath), { recursive: true });
+    fs.writeFileSync(filePath, JSON.stringify(obj, null, 2), 'utf8');
+  } catch {}
+}
+
+function getWatchState() {
+  return readJsonSafe(NOTIFY_WATCH_STATE_PATH, {
+    gatewayUp: null,
+    lastHeartbeatAt: null,
+    heartbeatMissNotifiedAt: null,
+    lastCronRunTsByJobId: {},
+    coreFiles: {},
+  });
+}
+
+function setWatchState(next) {
+  writeJsonSafe(NOTIFY_WATCH_STATE_PATH, next);
+}
+
+async function checkGatewayTransition() {
+  const base = GATEWAY_URL.replace(/\/$/, '');
+  let up = false;
+  try {
+    const healthRes = await fetch(`${base}/health`, { signal: AbortSignal.timeout(3000) });
+    up = !!healthRes.ok;
+  } catch {
+    up = false;
+  }
+
+  const s = getWatchState();
+  if (s.gatewayUp === null) {
+    s.gatewayUp = up;
+    setWatchState(s);
+    return;
+  }
+
+  if (up !== s.gatewayUp) {
+    s.gatewayUp = up;
+    setWatchState(s);
+    try {
+      notifications.add({
+        level: up ? 'info' : 'warn',
+        title: up ? 'Gateway is up' : 'Gateway is down',
+        body: up ? 'OpenClaw gateway responded to /health.' : `Could not reach ${base}/health`,
+        source: 'watch',
+        meta: { kind: 'gateway', up },
+      });
+    } catch {}
+    try {
+      appendActivity({ memoryDir: MEMORY_DIR, line: `Gateway ${up ? 'up' : 'down'} (watch)` });
+    } catch {}
+  }
+}
+
+function checkHeartbeatMiss() {
+  const s = getWatchState();
+
+  let lastHeartbeatAt = null;
+  try {
+    if (fs.existsSync(HEARTBEAT_STATE_PATH)) {
+      const data = JSON.parse(fs.readFileSync(HEARTBEAT_STATE_PATH, 'utf8'));
+      lastHeartbeatAt = data?.lastHeartbeatAt || null;
+    }
+  } catch {
+    lastHeartbeatAt = null;
+  }
+
+  if (lastHeartbeatAt && lastHeartbeatAt !== s.lastHeartbeatAt) {
+    s.lastHeartbeatAt = lastHeartbeatAt;
+    // reset miss notification if heartbeat comes back
+    s.heartbeatMissNotifiedAt = null;
+    setWatchState(s);
+    return;
+  }
+
+  // No heartbeat recorded yet
+  if (!lastHeartbeatAt) {
+    setWatchState(s);
+    return;
+  }
+
+  const age = Date.now() - Number(lastHeartbeatAt);
+  if (age > HEARTBEAT_MISS_MS && !s.heartbeatMissNotifiedAt) {
+    s.heartbeatMissNotifiedAt = Date.now();
+    setWatchState(s);
+    try {
+      notifications.add({
+        level: 'warn',
+        title: 'Heartbeat missed',
+        body: `No heartbeat for ~${Math.round(age / 60000)} minutes.`,
+        source: 'watch',
+        meta: { kind: 'heartbeat', lastHeartbeatAt },
+      });
+    } catch {}
+    try {
+      appendActivity({ memoryDir: MEMORY_DIR, line: `Heartbeat missed (~${Math.round(age / 60000)}m)` });
+    } catch {}
+  }
+}
+
+function isRunFailure(run) {
+  if (!run || typeof run !== 'object') return false;
+  const st = String(run.status || '').toLowerCase();
+  if (st && st !== 'ok') return true;
+  const summary = String(run.summary || '');
+  if (/\bfailed\b/i.test(summary)) return true;
+  if (summary.includes('⚠️')) return true;
+  return false;
+}
+
+function checkCronFailures() {
+  const jobs = readJobs();
+  const s = getWatchState();
+  const lastByJob = s.lastCronRunTsByJobId && typeof s.lastCronRunTsByJobId === 'object' ? s.lastCronRunTsByJobId : {};
+
+  for (const j of jobs) {
+    const jobId = j.jobId || j.id;
+    if (!jobId) continue;
+
+    const runs = readRuns(jobId, 1);
+    const latest = Array.isArray(runs) && runs.length ? runs[0] : null;
+    const latestTs = latest ? Number(latest.ts || latest.runAtMs || 0) : 0;
+    if (!latestTs) continue;
+
+    const prevTs = Number(lastByJob[jobId] || 0);
+    if (latestTs <= prevTs) continue; // already processed
+
+    lastByJob[jobId] = latestTs;
+    s.lastCronRunTsByJobId = lastByJob;
+    setWatchState(s);
+
+    if (isRunFailure(latest)) {
+      const name = j.name || jobId;
+      const summary = String(latest.summary || '').trim();
+      try {
+        notifications.add({
+          level: 'warn',
+          title: 'Cron job issue',
+          body: `${name}: ${summary || 'latest run flagged as warning/failure'}`,
+          source: 'watch',
+          meta: { kind: 'cron', jobId, status: latest.status || null },
+        });
+      } catch {}
+      try {
+        appendActivity({ memoryDir: MEMORY_DIR, line: `Cron issue (${name})` });
+      } catch {}
+    }
+  }
+}
+
+function fileStamp(filePath) {
+  try {
+    const st = fs.statSync(filePath);
+    return `${st.mtimeMs}|${st.size}`;
+  } catch {
+    return null;
+  }
+}
+
+function checkCoreFileChanges() {
+  const s = getWatchState();
+  const core = (s.coreFiles && typeof s.coreFiles === 'object') ? s.coreFiles : {};
+
+  const files = [
+    'AGENTS.md',
+    'SOUL.md',
+    'IDENTITY.md',
+    'USER.md',
+    'HEARTBEAT.md',
+    'TOOLS.md',
+  ];
+
+  let changed = false;
+  for (const name of files) {
+    const p = path.join(workspaceRoot, name);
+    const stamp = fileStamp(p);
+    const prev = core[name];
+
+    // Baseline on first sight; don't notify.
+    if (prev == null) {
+      core[name] = stamp;
+      changed = true;
+      continue;
+    }
+
+    if (stamp !== prev) {
+      core[name] = stamp;
+      changed = true;
+      try {
+        notifications.add({
+          level: 'info',
+          title: 'Core file changed',
+          body: `${name} was modified.`,
+          source: 'watch',
+          meta: { kind: 'file', file: name, path: p },
+        });
+      } catch {}
+      try {
+        appendActivity({ memoryDir: MEMORY_DIR, line: `File changed: ${name}` });
+      } catch {}
+    }
+  }
+
+  if (changed) {
+    s.coreFiles = core;
+    setWatchState(s);
+  }
+}
+
+// Fire-and-forget poller; only emits notifications on state transitions.
+setInterval(() => {
+  checkGatewayTransition().catch(() => {});
+  try { checkHeartbeatMiss(); } catch {}
+  try { checkCronFailures(); } catch {}
+  try { checkCoreFileChanges(); } catch {}
+}, NOTIFY_POLL_MS);
 
 app.use(express.json());
 
@@ -266,6 +505,11 @@ function isPidRunning(pid) {
 
 // POST /api/start — patch config, start gateway + dashboard (uses mode + model from body or config)
 app.post('/api/start', (req, res) => {
+  // activity log (best-effort)
+  try {
+    appendActivity({ memoryDir: MEMORY_DIR, line: `Start requested (mode=${req.body?.mode || 'auto'} model=${req.body?.model || 'auto'})` });
+  } catch {}
+
   const state = readState();
   if (state.gatewayPid && isPidRunning(state.gatewayPid)) {
     return res.status(400).json({ error: 'Already running', running: true });
@@ -352,6 +596,11 @@ app.post('/api/start', (req, res) => {
 
 // POST /api/stop — kill gateway + dashboard
 app.post('/api/stop', (req, res) => {
+  // activity log (best-effort)
+  try {
+    appendActivity({ memoryDir: MEMORY_DIR, line: 'Stop requested' });
+  } catch {}
+
   const state = readState();
   const killed = [];
   if (state.gatewayPid && isPidRunning(state.gatewayPid)) {
@@ -397,6 +646,22 @@ app.get('/api/dashboard/summary', async (req, res) => {
   res.json(result);
 });
 
+// Notifications
+app.get('/api/notifications', (req, res) => {
+  const limit = Number(req.query.limit || 50);
+  res.json(notifications.list({ limit }));
+});
+
+app.post('/api/notifications', (req, res) => {
+  const { level, title, body, source, meta } = req.body || {};
+  res.json(notifications.add({ level, title, body, source, meta }));
+});
+
+app.post('/api/notifications/dismiss', (req, res) => {
+  const { id, beforeTs } = req.body || {};
+  res.json(notifications.dismiss({ id, beforeTs }));
+});
+
 // GET /api/cron
 app.get('/api/cron', (req, res) => {
   const jobs = readJobs();
@@ -408,6 +673,21 @@ app.post('/api/cron/:jobId/run', async (req, res) => {
   const { jobId } = req.params;
   const result = await runNow(jobId);
   if (!result.ok) return res.status(500).json(result);
+
+  // Best-effort notification + activity log
+  try {
+    notifications.add({
+      level: 'info',
+      title: 'Cron job run requested',
+      body: `jobId=${jobId}`,
+      source: 'cron',
+      meta: { jobId },
+    });
+  } catch {}
+  try {
+    appendActivity({ memoryDir: MEMORY_DIR, line: `Cron run requested (jobId=${jobId})` });
+  } catch {}
+
   res.json(result);
 });
 

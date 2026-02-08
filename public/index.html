@@ -73,10 +73,10 @@
       <h6>Model</h6>
       <div class="d-flex flex-wrap align-items-center gap-1 mb-1">
         <div class="btn-group btn-group-sm" role="group">
-          <button type="button" class="btn" :class="mode === 'local' ? 'btn-primary' : 'btn-outline-secondary'" @click="mode = 'local'">Local</button>
-          <button type="button" class="btn" :class="mode === 'remote' ? 'btn-primary' : 'btn-outline-secondary'" @click="mode = 'remote'">Remote</button>
+          <button type="button" class="btn" :class="mode === 'local' ? 'btn-primary' : 'btn-outline-secondary'" @click="setMode('local')">Local</button>
+          <button type="button" class="btn" :class="mode === 'remote' ? 'btn-primary' : 'btn-outline-secondary'" @click="setMode('remote')">Remote</button>
         </div>
-        <select v-model="selectedModel" v-show="mode === 'local'" class="form-select form-select-sm" style="max-width: 200px;">
+        <select v-model="selectedModel" v-show="mode === 'local'" @change="saveLocalConfig" class="form-select form-select-sm" style="max-width: 200px;">
           <option value="">— select Ollama —</option>
           <option v-for="m in ollamaModels" :key="m.id" :value="m.id">{{ m.name }}</option>
         </select>
@@ -343,7 +343,6 @@
       mounted() {
         if (window.__OLLAMA_MODELS__ && window.__OLLAMA_MODELS__.length) {
           this.ollamaModels = window.__OLLAMA_MODELS__;
-          if (!this.selectedModel) this.selectedModel = this.ollamaModels[0].id;
         }
         this.activityModal = new bootstrap.Modal(document.getElementById('activityModal'));
         this.cronModal = new bootstrap.Modal(document.getElementById('cronModal'));
@@ -370,6 +369,8 @@
               fetch('/api/config').catch(() => ({ ok: false })),
               fetch('/api/remote-providers').catch(() => ({ ok: false })),
             ]);
+
+            // State first (so "running" can win over config for hydration)
             if (stateRes.ok) this.state = await stateRes.json();
             if (activityRes.ok) this.activity = await activityRes.json();
             if (cronRes.ok) this.cronJobs = (await cronRes.json()).jobs || [];
@@ -383,15 +384,23 @@
               const data = await providersRes.json();
               this.remoteProviders = data.providers || [];
             }
+
+            // Config (saved preferences)
             if (configRes.ok) {
               const cfg = await configRes.json();
               this.config = cfg;
+
+              // Hydrate from config defaults
               if (cfg.mode) this.mode = cfg.mode;
-              if (cfg.local?.model) this.selectedModel = this.selectedModel || cfg.local.model;
+              if (cfg.local?.model) this.selectedModel = cfg.local.model;
+
               if (cfg.remote) {
                 this.remoteProvider = cfg.remote.provider || '';
                 this.remoteBaseUrl = cfg.remote.baseUrl || '';
                 this.remoteCustomEnvKey = cfg.remote.apiKeyEnv || '';
+                this.remoteModel = '';
+                this.remoteCustomModel = '';
+
                 if (cfg.remote.model) {
                   const slash = cfg.remote.model.indexOf('/');
                   if (slash > 0) {
@@ -410,6 +419,38 @@
                 }
               }
             }
+
+            // If the gateway is running, prefer the currently running mode/model.
+            if (this.state && this.state.running && this.state.running.gateway) {
+              if (this.state.mode) this.mode = this.state.mode;
+              if (this.state.model) {
+                if (this.mode === 'local') {
+                  this.selectedModel = this.state.model;
+                } else if (this.mode === 'remote') {
+                  const runningModel = String(this.state.model);
+                  const slash = runningModel.indexOf('/');
+                  if (slash > 0) {
+                    const prov = runningModel.slice(0, slash);
+                    const modelId = runningModel.slice(slash + 1);
+                    if (prov === 'other' || !this.remoteProviders.find((p) => p.id === prov)) {
+                      this.remoteProvider = 'other';
+                      this.remoteCustomModel = runningModel;
+                      this.remoteModel = '';
+                    } else {
+                      this.remoteProvider = prov;
+                      this.remoteModel = modelId;
+                      this.remoteCustomModel = '';
+                    }
+                  } else {
+                    this.remoteProvider = 'other';
+                    this.remoteCustomModel = runningModel;
+                    this.remoteModel = '';
+                  }
+                }
+              }
+            }
+
+            // Models list
             const modelsRes = await fetch('/api/ollama-models');
             if (modelsRes.ok) {
               const data = await modelsRes.json();
@@ -417,6 +458,7 @@
               if (!this.selectedModel && this.ollamaModels.length) this.selectedModel = this.ollamaModels[0].id;
             } else if (this.ollamaModels.length === 0 && window.__OLLAMA_MODELS__) {
               this.ollamaModels = window.__OLLAMA_MODELS__;
+              if (!this.selectedModel && this.ollamaModels.length) this.selectedModel = this.ollamaModels[0].id;
             }
           } catch (e) {}
         },
@@ -432,6 +474,26 @@
             return m.ctx ? m.id + ' · ' + m.ctx : m.id;
           }
           return String(m);
+        },
+        async setMode(nextMode) {
+          this.mode = nextMode;
+          // Best-effort persistence of mode (and it also helps the UI rehydrate correctly)
+          try {
+            await fetch('/api/config', {
+              method: 'PATCH',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ mode: nextMode }),
+            });
+          } catch (e) {}
+        },
+        saveLocalConfig() {
+          // Persist local selection immediately (so reload doesn't reset to first model)
+          if (!this.selectedModel) return;
+          fetch('/api/config', {
+            method: 'PATCH',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ mode: 'local', localModel: this.selectedModel }),
+          }).then((r) => r.ok && r.json().then((c) => { this.config = c; }));
         },
         onRemoteProviderChange() {
           this.remoteModel = '';
