@@ -53,9 +53,19 @@
       <h6>Dashboard</h6>
       <div class="d-flex align-items-center justify-content-between gap-2 mb-1">
         <small class="text-muted">OpenClaw status snapshot</small>
-        <button class="btn btn-outline-secondary btn-sm" @click="refreshDashboard">Refresh</button>
+        <div class="d-flex align-items-center gap-1">
+          <button class="btn btn-outline-secondary btn-sm" @click="showDashboardRaw = !showDashboardRaw">{{ showDashboardRaw ? 'Hide raw' : 'Show raw' }}</button>
+          <button class="btn btn-outline-secondary btn-sm" @click="refreshDashboard">Refresh</button>
+        </div>
       </div>
-      <pre style="max-height: 180px;">{{ dashboardSummaryRaw || 'No snapshot yet.' }}</pre>
+      <div class="small mb-1" v-if="dashboardSummaryParsed">
+        <div class="obj-row"><span class="obj-key">Gateway:</span>{{ dashboardSummaryParsed.gateway || '-' }}</div>
+        <div class="obj-row"><span class="obj-key">Agents:</span>{{ dashboardSummaryParsed.agents || '-' }}</div>
+        <div class="obj-row"><span class="obj-key">Sessions:</span>{{ dashboardSummaryParsed.sessions || '-' }}</div>
+        <div class="obj-row"><span class="obj-key">Heartbeat:</span>{{ dashboardSummaryParsed.heartbeat || '-' }}</div>
+        <div class="obj-row" v-if="dashboardSummaryParsed.security"><span class="obj-key">Security:</span>{{ dashboardSummaryParsed.security.critical }} critical · {{ dashboardSummaryParsed.security.warn }} warn · {{ dashboardSummaryParsed.security.info }} info</div>
+      </div>
+      <pre v-if="showDashboardRaw" style="max-height: 180px;">{{ dashboardSummaryRaw || 'No snapshot yet.' }}</pre>
     </div>
 
     <!-- Mode + Model + Start/Stop -->
@@ -295,6 +305,8 @@
         cronJobs: [],
         heartbeat: { gateway: {}, state: {} },
         dashboardSummaryRaw: '',
+        dashboardSummaryParsed: null,
+        showDashboardRaw: false,
         cronRuns: [],
         detailActivity: {},
         detailCron: {},
@@ -365,6 +377,7 @@
             if (dashboardRes.ok) {
               const dash = await dashboardRes.json();
               this.dashboardSummaryRaw = dash?.data?.raw || '';
+              this.dashboardSummaryParsed = dash?.data?.parsed || null;
             }
             if (providersRes.ok) {
               const data = await providersRes.json();
@@ -486,10 +499,12 @@
             if (res.ok) {
               const data = await res.json();
               this.dashboardSummaryRaw = data?.data?.raw || '';
+              this.dashboardSummaryParsed = data?.data?.parsed || null;
             }
           } catch (e) {}
         },
         async runCronJob(j) {
+          if (!confirm('Run cron job now?\n\n' + (j.name || j.jobId))) return;
           try {
             const res = await fetch('/api/cron/' + encodeURIComponent(j.jobId) + '/run', { method: 'POST' });
             const data = await res.json();
