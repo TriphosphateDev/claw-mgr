@@ -42,45 +42,49 @@
     .obj-key { color: #79c0ff; margin-right: 0.35rem; }
     #app .text-muted { color: #c9d1d9 !important; }
     #app .mc-card small { color: #c9d1d9 !important; }
+    .mc-load-bar { height: 2px; background: linear-gradient(90deg, #58a6ff 0%, #58a6ff 30%, transparent 30%); background-size: 200% 100%; animation: mc-load-shift 0.8s ease-in-out infinite; }
+    @keyframes mc-load-shift { 0% { background-position: 200% 0; } 100% { background-position: -200% 0; } }
   </style>
 </head>
 <body>
   <script>window.__OLLAMA_MODELS__ = []; window.__REMOTE_PROVIDERS__ = [];</script>
   <div id="app" class="container-fluid py-2 px-2 px-sm-3" style="max-width: 640px;">
     <h1 class="h5 mb-2 mt-1 fw-bold">Claw Mgr</h1>
-
-    <div class="mc-card">
-      <h6>Dashboard</h6>
-      <div class="d-flex align-items-center justify-content-between gap-2 mb-1">
-        <small class="text-muted">OpenClaw status snapshot</small>
-        <div class="d-flex align-items-center gap-1">
-          <button class="btn btn-outline-secondary btn-sm" @click="showDashboardRaw = !showDashboardRaw">{{ showDashboardRaw ? 'Hide raw' : 'Show raw' }}</button>
-          <button class="btn btn-outline-secondary btn-sm" @click="refreshDashboard">Refresh</button>
-        </div>
-      </div>
-      <div class="small mb-1" v-if="dashboardSummaryParsed">
-        <div class="obj-row"><span class="obj-key">Gateway:</span>{{ dashboardSummaryParsed.gateway || '-' }}</div>
-        <div class="obj-row"><span class="obj-key">Agents:</span>{{ dashboardSummaryParsed.agents || '-' }}</div>
-        <div class="obj-row"><span class="obj-key">Sessions:</span>{{ dashboardSummaryParsed.sessions || '-' }}</div>
-        <div class="obj-row"><span class="obj-key">Heartbeat:</span>{{ dashboardSummaryParsed.heartbeat || '-' }}</div>
-        <div class="obj-row" v-if="dashboardSummaryParsed.security"><span class="obj-key">Security:</span>{{ dashboardSummaryParsed.security.critical }} critical · {{ dashboardSummaryParsed.security.warn }} warn · {{ dashboardSummaryParsed.security.info }} info</div>
-      </div>
-      <pre v-if="showDashboardRaw" style="max-height: 180px;">{{ dashboardSummaryRaw || 'No snapshot yet.' }}</pre>
+    <div v-if="loading" class="mc-load-bar mb-2" style="border-radius: 1px;"></div>
+    <div v-if="versionUpdateAvailable" class="small py-1 px-2 mb-2 rounded d-flex align-items-center justify-content-between" style="background: rgba(88, 166, 255, 0.15); border: 1px solid rgba(88, 166, 255, 0.4);">
+      <span>New version <strong>{{ versionLatest }}</strong> available</span>
+      <a href="https://github.com/Ascendism/claw-mgr" target="_blank" rel="noopener" class="btn btn-sm btn-outline-primary">Update</a>
     </div>
 
-    <!-- Mode + Model + Start/Stop -->
+    <!-- Model + Gateway status + Start/Stop (always first) -->
     <div class="mc-card">
       <h6>Model</h6>
+      <div class="d-flex align-items-center flex-wrap gap-2 mb-2">
+        <template v-if="loading">
+          <span class="spinner-border spinner-border-sm text-secondary" role="status"></span>
+          <span class="small text-muted">Checking gateway…</span>
+        </template>
+        <template v-else>
+          <span><span class="status-dot" :class="heartbeat.gateway?.ok ? 'ok' : 'err'"></span>Gateway {{ heartbeat.gateway?.ok ? 'up' : 'down' }}</span>
+          <span v-if="heartbeat.state?.lastHeartbeatAt" class="small text-muted">Last {{ formatAgo(heartbeat.state.lastHeartbeatAt) }}</span>
+        </template>
+      </div>
       <div class="d-flex flex-wrap align-items-center gap-1 mb-1">
         <div class="btn-group btn-group-sm" role="group">
           <button type="button" class="btn" :class="mode === 'local' ? 'btn-primary' : 'btn-outline-secondary'" @click="setMode('local')">Local</button>
           <button type="button" class="btn" :class="mode === 'remote' ? 'btn-primary' : 'btn-outline-secondary'" @click="setMode('remote')">Remote</button>
         </div>
-        <select v-model="selectedModel" v-show="mode === 'local'" @change="saveLocalConfig" class="form-select form-select-sm" style="max-width: 200px;">
-          <option value="">— select Ollama —</option>
-          <option v-for="m in ollamaModels" :key="m.id" :value="m.id">{{ m.name }}</option>
-        </select>
-        <div v-show="mode === 'remote'" class="d-inline-flex flex-wrap align-items-center gap-1">
+        <!-- Local: only Ollama dropdown (no remote provider UI) -->
+        <template v-if="mode === 'local'">
+          <select v-model="selectedModel" @change="saveLocalConfig" class="form-select form-select-sm" style="max-width: 200px;">
+            <option value="">— select Ollama —</option>
+            <option v-for="m in ollamaModels" :key="m.id" :value="m.id">{{ m.name }}</option>
+          </select>
+          <button v-if="ollamaModels.length === 0" type="button" class="btn btn-outline-secondary btn-sm" @click="fetchOllamaModels" :disabled="ollamaLoading">{{ ollamaLoading ? 'Loading…' : 'Refresh models' }}</button>
+          <small v-if="ollamaModels.length === 0 && !ollamaLoading" class="text-muted">Is Ollama running?</small>
+        </template>
+        <!-- Remote: only provider + model (no Ollama dropdown) -->
+        <template v-if="mode === 'remote'">
           <select v-model="remoteProvider" @change="onRemoteProviderChange" class="form-select form-select-sm" style="min-width: 130px; max-width: 160px;" title="Choose API provider">
             <option value="">— provider —</option>
             <option v-for="p in remoteProviders" :key="p.id" :value="p.id">{{ p.label }}</option>
@@ -91,17 +95,33 @@
             <option v-for="m in currentRemoteProviderModels" :key="modelId(m)" :value="modelId(m)">{{ modelLabel(m) }}</option>
           </select>
           <input v-if="remoteProvider === 'other'" v-model="remoteCustomModel" @input="saveRemoteConfig" type="text" class="form-control form-control-sm" style="min-width: 120px; max-width: 180px;" placeholder="provider/model" />
-        </div>
+        </template>
         <button class="btn btn-success btn-sm" :disabled="!canStart || state.running.gateway" @click="start">Start</button>
         <button class="btn btn-danger btn-sm" :disabled="!state.running.gateway && !state.running.dashboard" @click="stop">Stop</button>
       </div>
-      <small class="text-muted" v-if="!state.running.gateway">Saved: {{ mode }} · {{ state.model || config[mode]?.model || '—' }}</small>
-      <small class="text-muted" v-if="state.running.gateway">Running · {{ state.mode || mode }} · {{ state.model || '—' }}</small>
+      <small class="text-muted" v-if="loading">Loading…</small>
+      <small class="text-muted" v-else-if="!state.running.gateway">Saved: {{ mode }} · {{ state.model || config[mode]?.model || '—' }}</small>
+      <small class="text-muted" v-else-if="state.running.gateway">Running · {{ state.mode || mode }} · {{ state.model || '—' }}</small>
     </div>
 
     <!-- Remote API options (only when Remote mode) -->
-    <div class="mc-card" v-show="mode === 'remote'">
+    <div class="mc-card" v-if="mode === 'remote'">
       <h6>Remote API</h6>
+      <div v-if="remoteProvider && remoteCredsCheck.envKey" class="mb-2 p-2 rounded" :class="remoteCredsCheck.set ? 'bg-success bg-opacity-10 border border-success border-opacity-25' : 'bg-warning bg-opacity-10 border border-warning border-opacity-25'">
+        <template v-if="remoteCredsCheck.set">
+          <small class="text-success">Using <code>{{ remoteCredsCheck.envKey }}</code> from environment.</small>
+        </template>
+        <template v-else>
+          <small class="text-warning"><strong>No API key found.</strong> To use {{ remoteProvider === 'other' ? 'this provider' : remoteProvider }}:</small>
+          <ol class="small mb-0 mt-1 ps-3 text-muted">
+            <li>Add to <code>~/.openclaw/.env</code>: <code>{{ remoteCredsCheck.envKey }}=your-api-key</code></li>
+            <li>Or enter the key below (used only when you click Start; not saved).</li>
+          </ol>
+        </template>
+      </div>
+      <div v-else-if="remoteProvider === 'other'" class="mb-2 p-2 rounded bg-warning bg-opacity-10 border border-warning border-opacity-25">
+        <small class="text-muted">For custom providers: set your API key env var in <code>~/.openclaw/.env</code> (e.g. <code>CUSTOM_API_KEY=your-key</code>) or enter the key below when starting.</small>
+      </div>
       <div class="row g-1 mb-1">
         <div class="col-12 col-sm-6">
           <label class="form-label small mb-0 text-muted">Provider</label>
@@ -128,8 +148,8 @@
       </div>
       <div class="row g-1 mb-1">
         <div class="col-12 col-sm-6">
-          <label class="form-label small mb-0 text-muted">API key (optional — use env if blank)</label>
-          <input v-model="remoteApiKey" type="password" class="form-control form-control-sm" placeholder="Leave blank to use ~/.openclaw/.env" autocomplete="off" />
+          <label class="form-label small mb-0 text-muted">API key (optional)</label>
+          <input v-model="remoteApiKey" type="password" class="form-control form-control-sm" :placeholder="remoteCredsCheck.set ? 'Using env' : 'Paste key or set in ~/.openclaw/.env'" autocomplete="off" />
         </div>
         <div class="col-12 col-sm-6">
           <label class="form-label small mb-0 text-muted">Base URL (optional)</label>
@@ -139,24 +159,24 @@
       <small class="text-muted" v-if="currentRemoteEnvKey">Env key: {{ currentRemoteEnvKey }}</small>
     </div>
 
-    <!-- Heartbeat -->
+    <!-- Dashboard -->
     <div class="mc-card">
-      <h6>Heartbeat</h6>
-      <div class="d-flex align-items-center flex-wrap gap-2">
-        <span><span class="status-dot" :class="heartbeat.gateway?.ok ? 'ok' : 'err'"></span>Gateway {{ heartbeat.gateway?.ok ? 'up' : 'down' }}</span>
-        <span v-if="heartbeat.state?.lastHeartbeatAt" class="text-muted">Last {{ formatAgo(heartbeat.state.lastHeartbeatAt) }}</span>
-      </div>
-    </div>
-
-    <!-- Activity -->
-    <div class="mc-card">
-      <h6>Activity</h6>
-      <div v-if="activity.length === 0" class="small text-muted py-1">No activity</div>
-      <div v-else>
-        <div v-for="(a, i) in activity" :key="i" class="mc-list-item" @click="openActivity(a)">
-          <span class="small text-muted">{{ a.date }}</span> {{ a.description | truncate(60) }}
+      <h6>Dashboard</h6>
+      <div class="d-flex align-items-center justify-content-between gap-2 mb-1">
+          <small class="text-muted">OpenClaw status snapshot</small>
+          <div class="d-flex align-items-center gap-1">
+            <button class="btn btn-outline-secondary btn-sm" @click="showDashboardRaw = !showDashboardRaw">{{ showDashboardRaw ? 'Hide raw' : 'Show raw' }}</button>
+            <button class="btn btn-outline-secondary btn-sm" @click="refreshDashboard">Refresh</button>
+          </div>
         </div>
+        <div class="small mb-1" v-if="dashboardSummaryParsed">
+          <div class="obj-row"><span class="obj-key">Gateway:</span>{{ dashboardSummaryParsed.gateway || '-' }}</div>
+          <div class="obj-row"><span class="obj-key">Agents:</span>{{ dashboardSummaryParsed.agents || '-' }}</div>
+          <div class="obj-row"><span class="obj-key">Sessions:</span>{{ dashboardSummaryParsed.sessions || '-' }}</div>
+          <div class="obj-row"><span class="obj-key">Heartbeat:</span>{{ dashboardSummaryParsed.heartbeat || '-' }}</div>
+          <div class="obj-row" v-if="dashboardSummaryParsed.security"><span class="obj-key">Security:</span>{{ dashboardSummaryParsed.security.critical }} critical · {{ dashboardSummaryParsed.security.warn }} warn · {{ dashboardSummaryParsed.security.info }} info</div>
       </div>
+      <pre v-if="showDashboardRaw" style="max-height: 180px;">{{ dashboardSummaryRaw || 'No snapshot yet.' }}</pre>
     </div>
 
     <!-- Cron jobs -->
@@ -166,10 +186,13 @@
       <div v-else>
         <div v-for="j in cronJobs" :key="j.jobId || j.name" class="mc-list-item d-flex justify-content-between align-items-center">
           <span @click="openCron(j)" style="cursor:pointer;">{{ j.name }}</span>
-          <div class="d-flex align-items-center gap-1">
-            <button class="btn btn-outline-secondary btn-sm" @click="openCronRuns(j)">Runs</button>
-            <button class="btn btn-outline-secondary btn-sm" @click="runCronJob(j)">Run</button>
-            <span class="badge" :class="j.enabled ? 'bg-success' : 'bg-secondary'">{{ j.enabled ? 'on' : 'off' }}</span>
+          <div class="d-flex align-items-center gap-2">
+            <span class="small text-muted">{{ formatCronWhen(j) }}</span>
+            <div class="d-flex align-items-center gap-1">
+              <button class="btn btn-outline-secondary btn-sm" @click="openCronRuns(j)">Runs</button>
+              <button class="btn btn-outline-secondary btn-sm" @click="runCronJob(j)">Run</button>
+              <span class="badge" :class="j.enabled ? 'bg-success' : 'bg-secondary'">{{ j.enabled ? 'on' : 'off' }}</span>
+            </div>
           </div>
         </div>
       </div>
@@ -232,6 +255,10 @@
             <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
           </div>
           <div class="modal-body py-2">
+            <div class="mb-2 p-2 rounded bg-opacity-10" style="background: var(--mc-border);">
+              <div class="obj-row"><span class="obj-key">Last run:</span> {{ formatCronLastRunFull(detailCron.lastRunTs) }}</div>
+              <div class="obj-row" v-if="detailCron.lastRunStatus"><span class="obj-key">Status:</span> {{ detailCron.lastRunStatus }}</div>
+            </div>
             <div class="accordion" v-if="detailCron.schedule || detailCron.payload">
               <div class="accordion-item" v-if="detailCron.schedule">
                 <h2 class="accordion-header">
@@ -304,7 +331,10 @@
   </div>
 
   <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/js/bootstrap.bundle.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/dayjs@1.11.10/dayjs.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/dayjs@1.11.10/plugin/relativeTime.js"></script>
   <script src="/vendor/vue.global.prod.js"></script>
+  <script>try { if (window.dayjs && window.dayjs_plugin_relativeTime) dayjs.extend(dayjs_plugin_relativeTime); } catch(e){}</script>
   <script>
     Vue.config.productionTip = false;
     Vue.filter('truncate', function (v, len) {
@@ -351,6 +381,7 @@
         mode: 'local',
         selectedModel: '',
         ollamaModels: [],
+        ollamaLoading: false,
         config: { mode: 'local', local: {}, remote: {} },
         state: { gatewayPid: null, dashboardPid: null, model: null, mode: null, running: { gateway: false, dashboard: false } },
         activity: [],
@@ -385,6 +416,10 @@
         remoteApiKey: '',
         remoteBaseUrl: '',
         remoteCustomEnvKey: '',
+        remoteCredsCheck: { envKey: null, set: false },
+        loading: true,
+        versionUpdateAvailable: false,
+        versionLatest: '',
       },
       computed: {
         currentRemoteProviderModels() {
@@ -416,6 +451,8 @@
       mounted() {
         if (window.__OLLAMA_MODELS__ && window.__OLLAMA_MODELS__.length) {
           this.ollamaModels = window.__OLLAMA_MODELS__;
+        } else if (this.mode === 'local') {
+          this.fetchOllamaModels();
         }
         this.activityModal = new bootstrap.Modal(document.getElementById('activityModal'));
         this.cronModal = new bootstrap.Modal(document.getElementById('cronModal'));
@@ -431,6 +468,26 @@
           if (s < 3600) return Math.floor(s / 60) + 'm ago';
           if (s < 86400) return Math.floor(s / 3600) + 'h ago';
           return Math.floor(s / 86400) + 'd ago';
+        },
+        formatCronWhen(j) {
+          if (!j) return '—';
+          // schedule.at (e.g. schedule >> at) or top-level at when kind is 'at'
+          const atVal = (j.schedule && (j.schedule.at != null && j.schedule.at !== '')) ? j.schedule.at : (j.kind === 'at' && (j.at != null && j.at !== '') ? j.at : null);
+          if (atVal == null) return '—';
+          const ts = typeof atVal === 'number' ? atVal : new Date(atVal).getTime();
+          if (isNaN(ts)) return '—';
+          if (typeof dayjs !== 'undefined') return dayjs(ts).format('ddd, MMM D · h:mm A');
+          return new Date(ts).toLocaleString(undefined, { weekday: 'short', month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' });
+        },
+        formatCronLastRun(ts) {
+          if (ts == null || ts === '') return 'Never run';
+          if (typeof dayjs !== 'undefined' && dayjs(ts).fromNow) return dayjs(ts).fromNow();
+          return this.formatAgo(ts);
+        },
+        formatCronLastRunFull(ts) {
+          if (ts == null || ts === '') return 'Never run';
+          if (typeof dayjs !== 'undefined') return dayjs(ts).format('ddd, MMM D, YYYY · h:mm A');
+          return new Date(ts).toLocaleString();
         },
         async refresh() {
           try {
@@ -458,6 +515,11 @@
             if (providersRes.ok) {
               const data = await providersRes.json();
               this.remoteProviders = data.providers || [];
+            }
+            if (versionRes.ok) {
+              const v = await versionRes.json();
+              this.versionUpdateAvailable = !!v.updateAvailable;
+              this.versionLatest = v.latestVersion || '';
             }
 
             // Subagents sessions list (best-effort)
@@ -553,7 +615,29 @@
               this.ollamaModels = window.__OLLAMA_MODELS__;
               if (!this.selectedModel && this.ollamaModels.length) this.selectedModel = this.ollamaModels[0].id;
             }
+            if (this.mode === 'remote' && this.remoteProvider) {
+              this.checkRemoteCredentials();
+            }
           } catch (e) {}
+          finally {
+            this.loading = false;
+          }
+        },
+        async checkRemoteCredentials() {
+          if (!this.remoteProvider) {
+            this.remoteCredsCheck = { envKey: null, set: false };
+            return;
+          }
+          try {
+            const params = new URLSearchParams();
+            if (this.remoteProvider !== 'other') params.set('provider', this.remoteProvider);
+            if (this.remoteProvider === 'other' && this.currentRemoteEnvKey) params.set('apiKeyEnv', this.currentRemoteEnvKey);
+            const res = await fetch('/api/check-remote-credentials?' + params.toString());
+            if (res.ok) this.remoteCredsCheck = await res.json();
+            else this.remoteCredsCheck = { envKey: null, set: false };
+          } catch (e) {
+            this.remoteCredsCheck = { envKey: null, set: false };
+          }
         },
         canStart() {
           if (this.mode === 'local') return !!this.selectedModel;
@@ -570,7 +654,9 @@
         },
         async setMode(nextMode) {
           this.mode = nextMode;
-          // Best-effort persistence of mode (and it also helps the UI rehydrate correctly)
+          if (nextMode === 'local' && this.ollamaModels.length === 0) {
+            this.fetchOllamaModels();
+          }
           try {
             await fetch('/api/config', {
               method: 'PATCH',
@@ -578,6 +664,18 @@
               body: JSON.stringify({ mode: nextMode }),
             });
           } catch (e) {}
+        },
+        async fetchOllamaModels() {
+          this.ollamaLoading = true;
+          try {
+            const res = await fetch('/api/ollama-models');
+            if (res.ok) {
+              const data = await res.json();
+              this.ollamaModels = data.models || [];
+              if (!this.selectedModel && this.ollamaModels.length) this.selectedModel = this.ollamaModels[0].id;
+            }
+          } catch (e) {}
+          this.ollamaLoading = false;
         },
         saveLocalConfig() {
           // Persist local selection immediately (so reload doesn't reset to first model)
@@ -592,6 +690,7 @@
           this.remoteModel = '';
           this.remoteCustomModel = '';
           this.saveRemoteConfig();
+          this.checkRemoteCredentials();
         },
         saveRemoteConfig() {
           const model = this.effectiveRemoteModel;
