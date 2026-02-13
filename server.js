@@ -7,6 +7,7 @@ const { getDashboardSummary } = require('./services/openclawStatus');
 const { readJobs, readRuns, runNow } = require('./services/openclawCron');
 const { createNotificationsStore } = require('./services/notifications');
 const { appendActivity } = require('./services/activityLog');
+const { gatewayCall } = require('./services/openclawGatewayCall');
 
 const app = express();
 const PORT = Number(process.env.PORT) || 8011;
@@ -359,6 +360,74 @@ function patchOpenClawModel(model) {
 app.get('/api/ollama-models', async (req, res) => {
   const models = await fetchOllamaModels();
   res.json({ models });
+});
+
+// --- Subagents (Gateway RPC proxy) ---
+// These endpoints let the ClawMGR UI work with OpenClaw subagents without shelling out to the CLI.
+
+app.get('/api/sessions', async (req, res) => {
+  try {
+    const limit = req.query.limit != null ? Number(req.query.limit) : 30;
+    const activeMinutes = req.query.activeMinutes != null ? Number(req.query.activeMinutes) : 60;
+    // Gateway method naming uses dots (Control UI convention).
+    const out = await gatewayCall('sessions.list', { limit, activeMinutes });
+    if (!out.ok) return res.status(500).json(out);
+    res.json({ ok: true, result: out.result });
+  } catch (e) {
+    res.status(500).json({ ok: false, error: e.message });
+  }
+});
+
+app.post('/api/sessions/spawn', async (req, res) => {
+  try {
+    const { task, label, agentId, model, thinking, runTimeoutSeconds, cleanup } = req.body || {};
+    if (!task || typeof task !== 'string') {
+      return res.status(400).json({ ok: false, error: 'Missing task (string)' });
+    }
+
+    const params = { task, cleanup: cleanup || 'keep' };
+    if (label) params.label = label;
+    if (agentId) params.agentId = agentId;
+    if (model) params.model = model;
+    if (thinking) params.thinking = thinking;
+    if (runTimeoutSeconds) params.runTimeoutSeconds = runTimeoutSeconds;
+
+    const out = await gatewayCall('sessions.spawn', params);
+    if (!out.ok) return res.status(500).json(out);
+    res.json({ ok: true, result: out.result });
+  } catch (e) {
+    res.status(500).json({ ok: false, error: e.message });
+  }
+});
+
+app.get('/api/sessions/:sessionKey/history', async (req, res) => {
+  try {
+    const sessionKey = req.params.sessionKey;
+    const limit = req.query.limit != null ? Number(req.query.limit) : 50;
+    const includeTools = String(req.query.includeTools || '').toLowerCase() === 'true';
+
+    const out = await gatewayCall('sessions.history', { sessionKey, limit, includeTools });
+    if (!out.ok) return res.status(500).json(out);
+    res.json({ ok: true, result: out.result });
+  } catch (e) {
+    res.status(500).json({ ok: false, error: e.message });
+  }
+});
+
+// Deletes the session entry (and optionally transcript). Control UI uses this to clean up sessions.
+app.post('/api/sessions/:sessionKey/delete', async (req, res) => {
+  try {
+    const sessionKey = req.params.sessionKey;
+    const { deleteTranscript } = req.body || {};
+    const out = await gatewayCall('sessions.delete', {
+      key: sessionKey,
+      deleteTranscript: deleteTranscript !== false, // default true
+    });
+    if (!out.ok) return res.status(500).json(out);
+    res.json({ ok: true, result: out.result });
+  } catch (e) {
+    res.status(500).json({ ok: false, error: e.message });
+  }
 });
 
 // Remote provider list: models are { id, ctx } where ctx = context window (e.g. "128K", "1M")
