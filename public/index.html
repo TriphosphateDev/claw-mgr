@@ -49,15 +49,34 @@
   <div id="app" class="container-fluid py-2 px-2 px-sm-3" style="max-width: 640px;">
     <h1 class="h5 mb-2 mt-1 fw-bold">Claw Mgr</h1>
 
+    <div class="mc-card">
+      <h6>Dashboard</h6>
+      <div class="d-flex align-items-center justify-content-between gap-2 mb-1">
+        <small class="text-muted">OpenClaw status snapshot</small>
+        <div class="d-flex align-items-center gap-1">
+          <button class="btn btn-outline-secondary btn-sm" @click="showDashboardRaw = !showDashboardRaw">{{ showDashboardRaw ? 'Hide raw' : 'Show raw' }}</button>
+          <button class="btn btn-outline-secondary btn-sm" @click="refreshDashboard">Refresh</button>
+        </div>
+      </div>
+      <div class="small mb-1" v-if="dashboardSummaryParsed">
+        <div class="obj-row"><span class="obj-key">Gateway:</span>{{ dashboardSummaryParsed.gateway || '-' }}</div>
+        <div class="obj-row"><span class="obj-key">Agents:</span>{{ dashboardSummaryParsed.agents || '-' }}</div>
+        <div class="obj-row"><span class="obj-key">Sessions:</span>{{ dashboardSummaryParsed.sessions || '-' }}</div>
+        <div class="obj-row"><span class="obj-key">Heartbeat:</span>{{ dashboardSummaryParsed.heartbeat || '-' }}</div>
+        <div class="obj-row" v-if="dashboardSummaryParsed.security"><span class="obj-key">Security:</span>{{ dashboardSummaryParsed.security.critical }} critical · {{ dashboardSummaryParsed.security.warn }} warn · {{ dashboardSummaryParsed.security.info }} info</div>
+      </div>
+      <pre v-if="showDashboardRaw" style="max-height: 180px;">{{ dashboardSummaryRaw || 'No snapshot yet.' }}</pre>
+    </div>
+
     <!-- Mode + Model + Start/Stop -->
     <div class="mc-card">
       <h6>Model</h6>
       <div class="d-flex flex-wrap align-items-center gap-1 mb-1">
         <div class="btn-group btn-group-sm" role="group">
-          <button type="button" class="btn" :class="mode === 'local' ? 'btn-primary' : 'btn-outline-secondary'" @click="mode = 'local'">Local</button>
-          <button type="button" class="btn" :class="mode === 'remote' ? 'btn-primary' : 'btn-outline-secondary'" @click="mode = 'remote'">Remote</button>
+          <button type="button" class="btn" :class="mode === 'local' ? 'btn-primary' : 'btn-outline-secondary'" @click="setMode('local')">Local</button>
+          <button type="button" class="btn" :class="mode === 'remote' ? 'btn-primary' : 'btn-outline-secondary'" @click="setMode('remote')">Remote</button>
         </div>
-        <select v-model="selectedModel" v-show="mode === 'local'" class="form-select form-select-sm" style="max-width: 200px;">
+        <select v-model="selectedModel" v-show="mode === 'local'" @change="saveLocalConfig" class="form-select form-select-sm" style="max-width: 200px;">
           <option value="">— select Ollama —</option>
           <option v-for="m in ollamaModels" :key="m.id" :value="m.id">{{ m.name }}</option>
         </select>
@@ -145,9 +164,45 @@
       <h6>Cron jobs</h6>
       <div v-if="cronJobs.length === 0" class="small text-muted py-1">None</div>
       <div v-else>
-        <div v-for="j in cronJobs" :key="j.jobId || j.name" class="mc-list-item d-flex justify-content-between align-items-center" @click="openCron(j)">
-          <span>{{ j.name }}</span>
-          <span class="badge" :class="j.enabled ? 'bg-success' : 'bg-secondary'">{{ j.enabled ? 'on' : 'off' }}</span>
+        <div v-for="j in cronJobs" :key="j.jobId || j.name" class="mc-list-item d-flex justify-content-between align-items-center">
+          <span @click="openCron(j)" style="cursor:pointer;">{{ j.name }}</span>
+          <div class="d-flex align-items-center gap-1">
+            <button class="btn btn-outline-secondary btn-sm" @click="openCronRuns(j)">Runs</button>
+            <button class="btn btn-outline-secondary btn-sm" @click="runCronJob(j)">Run</button>
+            <span class="badge" :class="j.enabled ? 'bg-success' : 'bg-secondary'">{{ j.enabled ? 'on' : 'off' }}</span>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Subagents -->
+    <div class="mc-card">
+      <h6>Subagents</h6>
+      <div class="row g-1 align-items-center mb-1">
+        <div class="col-12">
+          <label class="form-label small mb-0 text-muted">Label (optional)</label>
+          <input v-model="spawnLabel" type="text" class="form-control form-control-sm" placeholder="e.g. clawmgr-run-1" />
+        </div>
+        <div class="col-12">
+          <label class="form-label small mb-0 text-muted">Task</label>
+          <textarea v-model="spawnTask" class="form-control form-control-sm" rows="4" placeholder="Paste the role header + task contract here..."></textarea>
+        </div>
+        <div class="col-12 d-flex gap-1">
+          <button class="btn btn-success btn-sm" :disabled="!spawnTask.trim() || spawning" @click="spawnSession">Spawn</button>
+          <button class="btn btn-outline-secondary btn-sm" :disabled="loadingSessions" @click="refreshSessions">Refresh</button>
+          <small class="text-muted ms-auto" v-if="sessionsError">{{ sessionsError }}</small>
+        </div>
+      </div>
+
+      <div v-if="sessions.length === 0" class="small text-muted py-1">No sessions</div>
+      <div v-else>
+        <div v-for="s in sessions" :key="s.key" class="mc-list-item d-flex justify-content-between align-items-center" @click="openSession(s)">
+          <span class="small">{{ s.label || s.key }}</span>
+          <div class="d-flex align-items-center gap-1">
+            <span class="badge bg-secondary" v-if="s.kind">{{ s.kind }}</span>
+            <button class="btn btn-outline-secondary btn-sm" @click.stop="openSession(s)">View</button>
+            <button class="btn btn-danger btn-sm" @click.stop="deleteSession(s)">Close</button>
+          </div>
         </div>
       </div>
     </div>
@@ -201,6 +256,47 @@
             </div>
             <p class="mb-1 mt-2" v-if="detailCron.sessionTarget"><strong>Target</strong> {{ detailCron.sessionTarget }}</p>
             <span class="badge" :class="detailCron.enabled !== false ? 'bg-success' : 'bg-secondary'">{{ detailCron.enabled !== false ? 'enabled' : 'disabled' }}</span>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="modal fade" id="cronRunsModal" tabindex="-1">
+      <div class="modal-dialog modal-dialog-centered modal-lg">
+        <div class="modal-content">
+          <div class="modal-header py-2">
+            <h6 class="modal-title">Runs · {{ detailCron.name || detailCron.jobId }}</h6>
+            <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
+          </div>
+          <div class="modal-body py-2">
+            <div v-if="cronRuns.length === 0" class="small text-muted">No runs found.</div>
+            <div v-for="(r, idx) in cronRuns" :key="idx" class="mc-card mb-1">
+              <div class="d-flex align-items-center justify-content-between">
+                <strong>{{ r.status || r.action || 'run' }}</strong>
+                <small class="text-muted">{{ r.ts ? new Date(r.ts).toLocaleString() : 'unknown time' }}</small>
+              </div>
+              <pre>{{ JSON.stringify(r, null, 2) }}</pre>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Session output modal -->
+    <div class="modal fade" id="sessionModal" tabindex="-1">
+      <div class="modal-dialog modal-dialog-centered modal-lg">
+        <div class="modal-content">
+          <div class="modal-header py-2">
+            <h6 class="modal-title">Session {{ detailSession.key || '—' }}</h6>
+            <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
+          </div>
+          <div class="modal-body py-2">
+            <div class="d-flex gap-1 mb-2">
+              <button class="btn btn-outline-secondary btn-sm" @click="reloadSessionHistory" :disabled="loadingSessionHistory">Pull latest</button>
+              <small class="text-muted" v-if="sessionHistoryError">{{ sessionHistoryError }}</small>
+            </div>
+            <pre v-if="detailSessionHistoryText">{{ detailSessionHistoryText }}</pre>
+            <div v-else class="small text-muted">No history loaded.</div>
           </div>
         </div>
       </div>
@@ -260,10 +356,28 @@
         activity: [],
         cronJobs: [],
         heartbeat: { gateway: {}, state: {} },
+        dashboardSummaryRaw: '',
+        dashboardSummaryParsed: null,
+        showDashboardRaw: false,
+        cronRuns: [],
         detailActivity: {},
         detailCron: {},
         activityModal: null,
         cronModal: null,
+        cronRunsModal: null,
+
+        // Subagents
+        sessions: [],
+        loadingSessions: false,
+        sessionsError: '',
+        spawnLabel: '',
+        spawnTask: '',
+        spawning: false,
+        sessionModal: null,
+        detailSession: {},
+        detailSessionHistory: null,
+        loadingSessionHistory: false,
+        sessionHistoryError: '',
         remoteProviders: (typeof window !== 'undefined' && window.__REMOTE_PROVIDERS__) ? window.__REMOTE_PROVIDERS__ : [],
         remoteProvider: '',
         remoteModel: '',
@@ -290,14 +404,23 @@
           if (this.remoteProvider && this.remoteModel) return this.remoteProvider + '/' + this.remoteModel;
           return this.config.remote?.model || '';
         },
+        detailSessionHistoryText() {
+          if (!this.detailSessionHistory) return '';
+          try {
+            return JSON.stringify(this.detailSessionHistory, null, 2);
+          } catch (e) {
+            return String(this.detailSessionHistory);
+          }
+        },
       },
       mounted() {
         if (window.__OLLAMA_MODELS__ && window.__OLLAMA_MODELS__.length) {
           this.ollamaModels = window.__OLLAMA_MODELS__;
-          if (!this.selectedModel) this.selectedModel = this.ollamaModels[0].id;
         }
         this.activityModal = new bootstrap.Modal(document.getElementById('activityModal'));
         this.cronModal = new bootstrap.Modal(document.getElementById('cronModal'));
+        this.cronRunsModal = new bootstrap.Modal(document.getElementById('cronRunsModal'));
+        this.sessionModal = new bootstrap.Modal(document.getElementById('sessionModal'));
         this.refresh();
         setInterval(this.refresh, 25000);
       },
@@ -311,31 +434,66 @@
         },
         async refresh() {
           try {
-            const [stateRes, activityRes, cronRes, heartbeatRes, configRes, providersRes] = await Promise.all([
+            const [stateRes, activityRes, cronRes, heartbeatRes, dashboardRes, configRes, providersRes, sessionsRes] = await Promise.all([
               fetch('/api/state'),
               fetch('/api/activity'),
               fetch('/api/cron'),
               fetch('/api/heartbeat'),
+              fetch('/api/dashboard/summary').catch(() => ({ ok: false })),
               fetch('/api/config').catch(() => ({ ok: false })),
               fetch('/api/remote-providers').catch(() => ({ ok: false })),
+              fetch('/api/sessions').catch(() => ({ ok: false })),
             ]);
+
+            // State first (so "running" can win over config for hydration)
             if (stateRes.ok) this.state = await stateRes.json();
             if (activityRes.ok) this.activity = await activityRes.json();
             if (cronRes.ok) this.cronJobs = (await cronRes.json()).jobs || [];
             if (heartbeatRes.ok) this.heartbeat = await heartbeatRes.json();
+            if (dashboardRes.ok) {
+              const dash = await dashboardRes.json();
+              this.dashboardSummaryRaw = dash?.data?.raw || '';
+              this.dashboardSummaryParsed = dash?.data?.parsed || null;
+            }
             if (providersRes.ok) {
               const data = await providersRes.json();
               this.remoteProviders = data.providers || [];
             }
+
+            // Subagents sessions list (best-effort)
+            if (sessionsRes && sessionsRes.ok) {
+              const data = await sessionsRes.json();
+              const result = data && data.result ? data.result : (data && data.result === null ? null : data.result);
+              // Our server returns { ok:true, result: <rpc result> }
+              if (data && data.ok && data.result && data.result.sessions) {
+                this.sessions = data.result.sessions;
+                this.sessionsError = '';
+              } else if (data && data.ok && Array.isArray(data.result?.sessions)) {
+                this.sessions = data.result.sessions;
+                this.sessionsError = '';
+              } else if (data && data.ok && data.result) {
+                // In case gateway shape changes, try a few common shapes.
+                this.sessions = data.result.sessions || data.result || [];
+                this.sessionsError = '';
+              }
+            }
+
+            // Config (saved preferences)
             if (configRes.ok) {
               const cfg = await configRes.json();
               this.config = cfg;
+
+              // Hydrate from config defaults
               if (cfg.mode) this.mode = cfg.mode;
-              if (cfg.local?.model) this.selectedModel = this.selectedModel || cfg.local.model;
+              if (cfg.local?.model) this.selectedModel = cfg.local.model;
+
               if (cfg.remote) {
                 this.remoteProvider = cfg.remote.provider || '';
                 this.remoteBaseUrl = cfg.remote.baseUrl || '';
                 this.remoteCustomEnvKey = cfg.remote.apiKeyEnv || '';
+                this.remoteModel = '';
+                this.remoteCustomModel = '';
+
                 if (cfg.remote.model) {
                   const slash = cfg.remote.model.indexOf('/');
                   if (slash > 0) {
@@ -354,6 +512,38 @@
                 }
               }
             }
+
+            // If the gateway is running, prefer the currently running mode/model.
+            if (this.state && this.state.running && this.state.running.gateway) {
+              if (this.state.mode) this.mode = this.state.mode;
+              if (this.state.model) {
+                if (this.mode === 'local') {
+                  this.selectedModel = this.state.model;
+                } else if (this.mode === 'remote') {
+                  const runningModel = String(this.state.model);
+                  const slash = runningModel.indexOf('/');
+                  if (slash > 0) {
+                    const prov = runningModel.slice(0, slash);
+                    const modelId = runningModel.slice(slash + 1);
+                    if (prov === 'other' || !this.remoteProviders.find((p) => p.id === prov)) {
+                      this.remoteProvider = 'other';
+                      this.remoteCustomModel = runningModel;
+                      this.remoteModel = '';
+                    } else {
+                      this.remoteProvider = prov;
+                      this.remoteModel = modelId;
+                      this.remoteCustomModel = '';
+                    }
+                  } else {
+                    this.remoteProvider = 'other';
+                    this.remoteCustomModel = runningModel;
+                    this.remoteModel = '';
+                  }
+                }
+              }
+            }
+
+            // Models list
             const modelsRes = await fetch('/api/ollama-models');
             if (modelsRes.ok) {
               const data = await modelsRes.json();
@@ -361,6 +551,7 @@
               if (!this.selectedModel && this.ollamaModels.length) this.selectedModel = this.ollamaModels[0].id;
             } else if (this.ollamaModels.length === 0 && window.__OLLAMA_MODELS__) {
               this.ollamaModels = window.__OLLAMA_MODELS__;
+              if (!this.selectedModel && this.ollamaModels.length) this.selectedModel = this.ollamaModels[0].id;
             }
           } catch (e) {}
         },
@@ -376,6 +567,26 @@
             return m.ctx ? m.id + ' · ' + m.ctx : m.id;
           }
           return String(m);
+        },
+        async setMode(nextMode) {
+          this.mode = nextMode;
+          // Best-effort persistence of mode (and it also helps the UI rehydrate correctly)
+          try {
+            await fetch('/api/config', {
+              method: 'PATCH',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ mode: nextMode }),
+            });
+          } catch (e) {}
+        },
+        saveLocalConfig() {
+          // Persist local selection immediately (so reload doesn't reset to first model)
+          if (!this.selectedModel) return;
+          fetch('/api/config', {
+            method: 'PATCH',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ mode: 'local', localModel: this.selectedModel }),
+          }).then((r) => r.ok && r.json().then((c) => { this.config = c; }));
         },
         onRemoteProviderChange() {
           this.remoteModel = '';
@@ -433,9 +644,135 @@
             alert(e.message);
           }
         },
+
+        async refreshSessions() {
+          this.loadingSessions = true;
+          this.sessionsError = '';
+          try {
+            const r = await fetch('/api/sessions');
+            const data = await r.json();
+            if (!r.ok || !data.ok) throw new Error(data.error || 'Failed to load sessions');
+            // Expected shape: { ok:true, result:{ sessions:[...] } }
+            this.sessions = (data.result && data.result.sessions) ? data.result.sessions : (Array.isArray(data.result) ? data.result : []);
+          } catch (e) {
+            this.sessionsError = e.message;
+          } finally {
+            this.loadingSessions = false;
+          }
+        },
+
+        async spawnSession() {
+          const task = (this.spawnTask || '').trim();
+          if (!task) return;
+          this.spawning = true;
+          this.sessionsError = '';
+          try {
+            const r = await fetch('/api/sessions/spawn', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                label: (this.spawnLabel || '').trim() || undefined,
+                task,
+                cleanup: 'keep',
+              }),
+            });
+            const data = await r.json();
+            if (!r.ok || !data.ok) throw new Error(data.error || 'Spawn failed');
+            // Clear task box on success
+            this.spawnTask = '';
+            await this.refreshSessions();
+          } catch (e) {
+            this.sessionsError = e.message;
+          } finally {
+            this.spawning = false;
+          }
+        },
+
+        async openSession(s) {
+          this.detailSession = s || {};
+          this.detailSessionHistory = null;
+          this.sessionHistoryError = '';
+          this.sessionModal.show();
+          await this.reloadSessionHistory();
+        },
+
+        async deleteSession(s) {
+          const key = s && s.key ? s.key : '';
+          if (!key) return;
+          if (!confirm('Close session? This removes it from the sessions list (transcript will be archived).')) return;
+          this.sessionsError = '';
+          try {
+            const r = await fetch('/api/sessions/' + encodeURIComponent(key) + '/delete', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ deleteTranscript: true }),
+            });
+            const data = await r.json();
+            if (!r.ok || !data.ok) throw new Error(data.error || 'Delete failed');
+            // If we were viewing it, clear the modal state.
+            if (this.detailSession && this.detailSession.key === key) {
+              this.detailSession = {};
+              this.detailSessionHistory = null;
+            }
+            await this.refreshSessions();
+          } catch (e) {
+            this.sessionsError = e.message;
+          }
+        },
+
+        async reloadSessionHistory() {
+          const key = this.detailSession && this.detailSession.key ? this.detailSession.key : '';
+          if (!key) return;
+          this.loadingSessionHistory = true;
+          this.sessionHistoryError = '';
+          try {
+            const r = await fetch('/api/sessions/' + encodeURIComponent(key) + '/history?limit=50');
+            const data = await r.json();
+            if (!r.ok || !data.ok) throw new Error(data.error || 'Failed to load history');
+            this.detailSessionHistory = data.result;
+          } catch (e) {
+            this.sessionHistoryError = e.message;
+          } finally {
+            this.loadingSessionHistory = false;
+          }
+        },
+
         openActivity(a) {
           this.detailActivity = a;
           this.activityModal.show();
+        },
+        async refreshDashboard() {
+          try {
+            const res = await fetch('/api/dashboard/summary');
+            if (res.ok) {
+              const data = await res.json();
+              this.dashboardSummaryRaw = data?.data?.raw || '';
+              this.dashboardSummaryParsed = data?.data?.parsed || null;
+            }
+          } catch (e) {}
+        },
+        async runCronJob(j) {
+          if (!confirm('Run cron job now?\n\n' + (j.name || j.jobId))) return;
+          try {
+            const res = await fetch('/api/cron/' + encodeURIComponent(j.jobId) + '/run', { method: 'POST' });
+            const data = await res.json();
+            if (!res.ok || !data.ok) alert(data?.data?.stderr || data?.error?.message || 'Cron run failed');
+            await this.refresh();
+          } catch (e) {
+            alert(e.message);
+          }
+        },
+        async openCronRuns(j) {
+          this.detailCron = j;
+          this.cronRuns = [];
+          try {
+            const res = await fetch('/api/cron/' + encodeURIComponent(j.jobId) + '/runs?limit=20');
+            if (res.ok) {
+              const data = await res.json();
+              this.cronRuns = data?.data?.runs || [];
+            }
+          } catch (e) {}
+          this.cronRunsModal.show();
         },
         openCron(j) {
           this.detailCron = j;

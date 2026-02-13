@@ -3,4 +3,5 @@ node_modules/
 .env.local
 .claw-mgr-state.json
 *.log
+data/
 .DS_Store
